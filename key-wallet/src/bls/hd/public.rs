@@ -3,13 +3,10 @@
 use core::fmt;
 use dashcore_hashes::{sha256, Hash, HashEngine, Hmac, HmacEngine};
 
-use dashcore::blsful::SerializationFormat;
-use dashcore::blsful::{Bls12381G2Impl, PublicKey as BlsPublicKey, SecretKey as BlsSecretKey};
-
 use dashcore::Network;
 
 use crate::bip32::{ChainCode, ChildNumber, DerivationPath, Fingerprint};
-use crate::bls::hd::{Error, ExtendedBLSPrivKey};
+use crate::bls::hd::{BlsDerivationMode, BlsPublicKey, BlsSecretKey, Error, ExtendedBLSPrivKey};
 
 /// Extended BLS public key for HD derivation
 #[derive(Clone)]
@@ -23,7 +20,7 @@ pub struct ExtendedBLSPubKey {
     /// Child number
     pub child_number: ChildNumber,
     /// Public key (BLS G2 element - 48 bytes)
-    pub public_key: BlsPublicKey<Bls12381G2Impl>,
+    pub public_key: BlsPublicKey,
     /// Chain code for derivation
     pub chain_code: ChainCode,
 }
@@ -54,7 +51,7 @@ impl ExtendedBLSPubKey {
     /// `fLegacy = false`. For Dash masternode operator keys use
     /// [`Self::derive_pub_legacy`], which matches DashSync.
     pub fn derive_pub(&self, child: ChildNumber) -> Result<Self, Error> {
-        self.derive_pub_with_mode(child, SerializationFormat::Modern)
+        self.derive_pub_with_mode(child, BlsDerivationMode::Modern)
     }
 
     /// Derive a child public key using the legacy Dash public key
@@ -63,7 +60,7 @@ impl ExtendedBLSPubKey {
     /// Equivalent to dashbls `PublicChild(i, fLegacy = true)` — the mode
     /// dashbls/DashSync use for masternode operator keys.
     pub fn derive_pub_legacy(&self, child: ChildNumber) -> Result<Self, Error> {
-        self.derive_pub_with_mode(child, SerializationFormat::Legacy)
+        self.derive_pub_with_mode(child, BlsDerivationMode::Legacy)
     }
 
     /// Derive a child public key with an explicit serialization mode
@@ -71,7 +68,7 @@ impl ExtendedBLSPubKey {
     pub fn derive_pub_with_mode(
         &self,
         child: ChildNumber,
-        format: SerializationFormat,
+        format: BlsDerivationMode,
     ) -> Result<Self, Error> {
         if child.is_hardened() {
             return Err(Error::CannotDeriveFromHardenedPublic);
@@ -104,26 +101,14 @@ impl ExtendedBLSPubKey {
 
         // For BLS public key derivation, we need to do elliptic curve point addition
         // First, convert the tweak bytes to a scalar (private key)
-        let tweak_privkey = BlsSecretKey::<Bls12381G2Impl>::from_be_bytes(tweak_bytes)
-            .into_option()
-            .ok_or(Error::InvalidPrivateKey)?;
+        let tweak_privkey =
+            BlsSecretKey::from_be_bytes_reduce(tweak_bytes).ok_or(Error::InvalidPrivateKey)?;
 
         // Convert the scalar to a public key point (scalar * G where G is the generator)
-        let tweak_pubkey = BlsPublicKey::from(&tweak_privkey);
-
-        // Now we need to add the two public key points using elliptic curve point addition
-        // The BLS public key type has an inner field (0) that contains the actual G2Projective point
-        // G2Projective implements the Group trait which supports addition
-
-        // Access the underlying G2Projective points
-        let parent_point = self.public_key.0;
-        let tweak_point = tweak_pubkey.0;
+        let tweak_pubkey = tweak_privkey.public_key();
 
         // Perform elliptic curve point addition
-        let derived_point = parent_point + tweak_point;
-
-        // Create the new public key with the derived point
-        let derived_pubkey = BlsPublicKey(derived_point);
+        let derived_pubkey = self.public_key.add(&tweak_pubkey);
 
         Ok(ExtendedBLSPubKey {
             network: self.network,
@@ -157,7 +142,7 @@ impl ExtendedBLSPubKey {
     ///
     /// This is the format dashbls/DashSync use throughout the BLS HD chain.
     pub fn to_bytes_legacy(&self) -> [u8; 48] {
-        let bytes = self.public_key.to_bytes_with_mode(SerializationFormat::Legacy);
+        let bytes = self.public_key.to_bytes_with_mode(BlsDerivationMode::Legacy);
         let mut array = [0u8; 48];
         array.copy_from_slice(&bytes[..48.min(bytes.len())]);
         array
@@ -166,13 +151,13 @@ impl ExtendedBLSPubKey {
     /// Derive at a path using the modern (IETF) serialization mode
     /// (only non-hardened paths allowed; see [`Self::derive_pub`]).
     pub fn derive_path(&self, path: &DerivationPath) -> Result<Self, Error> {
-        self.derive_path_with_mode(path, SerializationFormat::Modern)
+        self.derive_path_with_mode(path, BlsDerivationMode::Modern)
     }
 
     /// Derive at a path using the legacy Dash serialization mode
     /// (only non-hardened paths allowed; see [`Self::derive_pub_legacy`]).
     pub fn derive_path_legacy(&self, path: &DerivationPath) -> Result<Self, Error> {
-        self.derive_path_with_mode(path, SerializationFormat::Legacy)
+        self.derive_path_with_mode(path, BlsDerivationMode::Legacy)
     }
 
     /// Derive at a path with an explicit serialization mode
@@ -180,7 +165,7 @@ impl ExtendedBLSPubKey {
     pub fn derive_path_with_mode(
         &self,
         path: &DerivationPath,
-        format: SerializationFormat,
+        format: BlsDerivationMode,
     ) -> Result<Self, Error> {
         let mut key = self.clone();
         for child in path.as_ref() {

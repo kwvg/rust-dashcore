@@ -34,11 +34,13 @@
 //! available in both formats ([`ExtendedBLSPubKey::to_bytes`] /
 //! [`ExtendedBLSPubKey::to_bytes_legacy`]).
 
+mod backend;
 mod codec;
 mod error;
 mod public;
 mod secret;
 
+pub use backend::{BlsDerivationMode, BlsPublicKey, BlsSecretKey};
 pub use error::Error;
 pub use public::ExtendedBLSPubKey;
 pub use secret::ExtendedBLSPrivKey;

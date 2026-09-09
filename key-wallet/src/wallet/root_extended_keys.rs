@@ -8,7 +8,7 @@ use crate::{Error, Network, Wallet};
 #[cfg(feature = "bincode")]
 use bincode::{BorrowDecode, Decode, Encode};
 #[cfg(feature = "bls")]
-use dashcore::blsful::Bls12381G2Impl;
+use crate::bls::hd::BlsSecretKey;
 use dashcore_hashes::{sha512, Hash, HashEngine, Hmac, HmacEngine};
 use secp256k1::Secp256k1;
 #[cfg(feature = "serde")]
@@ -103,19 +103,14 @@ impl RootExtendedPrivKey {
     pub fn to_bls_extended_priv_key(&self, network: Network) -> Result<ExtendedBLSPrivKey, Error> {
         // Convert secp256k1 private key bytes to BLS private key
         // Using from_le_bytes for little-endian byte order
-        // Note: from_le_bytes returns a CtOption (constant-time option) for security
-        let bls_private_key_option = dashcore::blsful::SecretKey::<Bls12381G2Impl>::from_le_bytes(
-            &self.root_private_key.secret_bytes(),
-        );
-
-        // Convert CtOption to Result
-        let bls_private_key = if bls_private_key_option.is_some().into() {
-            bls_private_key_option.unwrap()
-        } else {
-            return Err(Error::InvalidParameter(
-                "Failed to convert to BLS key: invalid key bytes".to_string(),
-            ));
-        };
+        let bls_private_key =
+            BlsSecretKey::from_le_bytes_reduce(&self.root_private_key.secret_bytes()).ok_or_else(
+                || {
+                    Error::InvalidParameter(
+                        "Failed to convert to BLS key: invalid key bytes".to_string(),
+                    )
+                },
+            )?;
 
         Ok(ExtendedBLSPrivKey {
             network,

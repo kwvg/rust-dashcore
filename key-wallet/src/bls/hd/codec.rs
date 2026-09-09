@@ -1,13 +1,11 @@
 //! Serialization for extended BLS keys.
 
-use dashcore::blsful::SerializationFormat;
-use dashcore::blsful::{Bls12381G2Impl, PublicKey as BlsPublicKey, SecretKey as BlsSecretKey};
 use dashcore::Network;
 #[cfg(feature = "serde")]
 use serde::Deserialize;
 
 use crate::bip32::{ChainCode, ChildNumber, Fingerprint};
-use crate::bls::hd::{ExtendedBLSPrivKey, ExtendedBLSPubKey};
+use crate::bls::hd::{BlsDerivationMode, BlsPublicKey, BlsSecretKey, ExtendedBLSPrivKey, ExtendedBLSPubKey};
 
 // Manual serde implementations for ExtendedBLSPrivKey
 #[cfg(feature = "serde")]
@@ -45,8 +43,7 @@ impl<'de> serde::Deserialize<'de> for ExtendedBLSPrivKey {
         }
 
         let helper = Helper::deserialize(deserializer)?;
-        let private_key = BlsSecretKey::<Bls12381G2Impl>::from_be_bytes(&helper.private_key)
-            .into_option()
+        let private_key = BlsSecretKey::from_be_bytes_reduce(&helper.private_key)
             .ok_or_else(|| serde::de::Error::custom("Invalid BLS private key"))?;
 
         Ok(ExtendedBLSPrivKey {
@@ -96,11 +93,9 @@ impl<'de> serde::Deserialize<'de> for ExtendedBLSPubKey {
         }
 
         let helper = Helper::deserialize(deserializer)?;
-        let public_key = BlsPublicKey::<Bls12381G2Impl>::from_bytes_with_mode(
-            &helper.public_key,
-            SerializationFormat::Modern,
-        )
-        .map_err(|e| serde::de::Error::custom(format!("Invalid BLS public key: {}", e)))?;
+        let public_key =
+            BlsPublicKey::from_bytes_with_mode(&helper.public_key, BlsDerivationMode::Modern)
+                .map_err(|e| serde::de::Error::custom(format!("Invalid BLS public key: {}", e)))?;
 
         Ok(ExtendedBLSPubKey {
             network: helper.network,
@@ -142,11 +137,9 @@ impl<C> bincode::Decode<C> for ExtendedBLSPrivKey {
         let parent_fingerprint = Fingerprint::decode(decoder)?;
         let child_number = ChildNumber::decode(decoder)?;
         let private_key_bytes: [u8; 32] = <[u8; 32]>::decode(decoder)?;
-        let private_key = BlsSecretKey::<Bls12381G2Impl>::from_be_bytes(&private_key_bytes)
-            .into_option()
-            .ok_or_else(|| {
-                bincode::error::DecodeError::OtherString("Invalid BLS private key".to_string())
-            })?;
+        let private_key = BlsSecretKey::from_be_bytes_reduce(&private_key_bytes).ok_or_else(|| {
+            bincode::error::DecodeError::OtherString("Invalid BLS private key".to_string())
+        })?;
         let chain_code = ChainCode::decode(decoder)?;
 
         Ok(ExtendedBLSPrivKey {
@@ -198,13 +191,14 @@ impl<C> bincode::Decode<C> for ExtendedBLSPubKey {
         let parent_fingerprint = Fingerprint::decode(decoder)?;
         let child_number = ChildNumber::decode(decoder)?;
         let public_key_bytes: Vec<u8> = Vec::<u8>::decode(decoder)?;
-        let public_key = BlsPublicKey::<Bls12381G2Impl>::from_bytes_with_mode(
-            &public_key_bytes,
-            SerializationFormat::Modern,
-        )
-        .map_err(|e| {
-            bincode::error::DecodeError::OtherString(format!("Invalid BLS public key: {}", e))
-        })?;
+        let public_key =
+            BlsPublicKey::from_bytes_with_mode(&public_key_bytes, BlsDerivationMode::Modern)
+                .map_err(|e| {
+                    bincode::error::DecodeError::OtherString(format!(
+                        "Invalid BLS public key: {}",
+                        e
+                    ))
+                })?;
         let chain_code = ChainCode::decode(decoder)?;
 
         Ok(ExtendedBLSPubKey {

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use crate::account::TransactionRecord;
 #[cfg(feature = "bls")]
-use crate::derivation_bls_bip32::ExtendedBLSPubKey;
+use crate::bls::hd::{BlsPublicKey, ExtendedBLSPubKey};
 use crate::managed_account::address_pool;
 #[cfg(any(feature = "bls", feature = "eddsa"))]
 use crate::managed_account::address_pool::PublicKeyType;
@@ -400,7 +400,7 @@ pub trait ManagedAccountTrait {
         &mut self,
         account_xpub: Option<ExtendedBLSPubKey>,
         add_to_state: bool,
-    ) -> Result<dashcore::blsful::PublicKey<dashcore::blsful::Bls12381G2Impl>, &'static str> {
+    ) -> Result<BlsPublicKey, &'static str> {
         match self.managed_account_type_mut() {
             ManagedAccountType::ProviderOperatorKeys {
                 addresses,

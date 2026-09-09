@@ -1,7 +1,7 @@
 //! Provider operator keys held in an address pool.
 
 use crate::bip32::DerivationPath;
-use crate::bls::hd::{ExtendedBLSPrivKey, ExtendedBLSPubKey};
+use crate::bls::hd::{BlsDerivationMode, BlsPublicKey, ExtendedBLSPrivKey, ExtendedBLSPubKey};
 use crate::error::{Error, Result};
 use crate::managed_account::address_pool::{self, AddressPool, DerivedKey, PublicKeyType};
 
@@ -41,8 +41,7 @@ pub(crate) fn next_operator_key(
     addresses: &mut AddressPool,
     account_xpub: Option<ExtendedBLSPubKey>,
     add_to_state: bool,
-) -> core::result::Result<dashcore::blsful::PublicKey<dashcore::blsful::Bls12381G2Impl>, &'static str>
-{
+) -> core::result::Result<BlsPublicKey, &'static str> {
     let key_source = match account_xpub {
         Some(xpub) => address_pool::KeySource::BLSPublic(xpub),
         None => address_pool::KeySource::NoKeySource,
@@ -58,12 +57,8 @@ pub(crate) fn next_operator_key(
 
     addresses.mark_index_used(info.index);
 
-    use dashcore::blsful::{Bls12381G2Impl, PublicKey, SerializationFormat};
-    let public_key = PublicKey::<Bls12381G2Impl>::from_bytes_with_mode(
-        &pub_key_bytes,
-        SerializationFormat::Modern,
-    )
-    .map_err(|_| "Failed to deserialize BLS public key")?;
+    let public_key = BlsPublicKey::from_bytes_with_mode(&pub_key_bytes, BlsDerivationMode::Modern)
+        .map_err(|_| "Failed to deserialize BLS public key")?;
 
     Ok(public_key)
 }

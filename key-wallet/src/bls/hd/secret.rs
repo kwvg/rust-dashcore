@@ -3,14 +3,10 @@
 use core::fmt;
 use dashcore_hashes::{sha256, Hash, HashEngine, Hmac, HmacEngine};
 
-// NOTE: We use Bls12381G2Impl for BLS keys (48-byte public keys)
-use dashcore::blsful::SerializationFormat;
-use dashcore::blsful::{Bls12381G2Impl, PublicKey as BlsPublicKey, SecretKey as BlsSecretKey};
-
 use dashcore::Network;
 
 use crate::bip32::{ChainCode, ChildNumber, DerivationPath, Fingerprint};
-use crate::bls::hd::{Error, ExtendedBLSPubKey};
+use crate::bls::hd::{BlsDerivationMode, BlsPublicKey, BlsSecretKey, Error, ExtendedBLSPubKey};
 
 /// Extended BLS private key for HD derivation
 #[derive(Clone)]
@@ -24,20 +20,20 @@ pub struct ExtendedBLSPrivKey {
     /// Child number
     pub child_number: ChildNumber,
     /// Private key (BLS secret key)
-    pub private_key: BlsSecretKey<Bls12381G2Impl>,
+    pub private_key: BlsSecretKey,
     /// Chain code for derivation
     pub chain_code: ChainCode,
 }
 
-// Hand-written (not `#[derive(Zeroize)]`): `BlsSecretKey` has no `Zeroize`
-// impl of its own, but its inner scalar (public field `0`) does, so we wipe
-// the value field by field. `Drop` (below) calls this, so the key is wiped
+// Hand-written (not `#[derive(Zeroize)]`): the value is wiped field by
+// field, the key and chain code as secret material and the derivation
+// metadata after them. `Drop` (below) calls this, so the key is wiped
 // automatically on scope exit with no caller action required.
 // Cf. `ExtendedPrivKey` in `bip32`.
 impl zeroize::Zeroize for ExtendedBLSPrivKey {
     fn zeroize(&mut self) {
         // Secret key material.
-        self.private_key.0.zeroize();
+        self.private_key.zeroize();
         self.chain_code.zeroize();
         // Derivation metadata — cleared too so the whole value is wiped.
         self.depth.zeroize();
@@ -92,8 +88,7 @@ impl ExtendedBLSPrivKey {
 
         // The C++ implementation does modulo reduction by curve order
         // We need to do the same before converting to BLS private key
-        let private_key = BlsSecretKey::<Bls12381G2Impl>::from_be_bytes(private_key_bytes)
-            .into_option()
+        let private_key = BlsSecretKey::from_be_bytes_reduce(private_key_bytes)
             .ok_or(Error::InvalidPrivateKey)?;
 
         // #[cfg(test)]
@@ -126,7 +121,7 @@ impl ExtendedBLSPrivKey {
     /// `fLegacy = false`. For Dash masternode operator keys use
     /// [`Self::derive_priv_legacy`], which matches DashSync.
     pub fn derive_priv(&self, child: ChildNumber) -> Result<Self, Error> {
-        self.derive_priv_with_mode(child, SerializationFormat::Modern)
+        self.derive_priv_with_mode(child, BlsDerivationMode::Modern)
     }
 
     /// Derive a child private key using the legacy Dash public key
@@ -135,7 +130,7 @@ impl ExtendedBLSPrivKey {
     /// Equivalent to dashbls `PrivateChild(i, fLegacy = true)` — the mode
     /// dashbls/DashSync use for masternode operator keys.
     pub fn derive_priv_legacy(&self, child: ChildNumber) -> Result<Self, Error> {
-        self.derive_priv_with_mode(child, SerializationFormat::Legacy)
+        self.derive_priv_with_mode(child, BlsDerivationMode::Legacy)
     }
 
     /// Derive a child private key with an explicit serialization mode.
@@ -146,7 +141,7 @@ impl ExtendedBLSPrivKey {
     pub fn derive_priv_with_mode(
         &self,
         child: ChildNumber,
-        format: SerializationFormat,
+        format: BlsDerivationMode,
     ) -> Result<Self, Error> {
         // Build the input data for HMAC, following dashbls
         // `ExtendedPrivateKey::PrivateChild` (extendedprivatekey.cpp)
@@ -184,18 +179,11 @@ impl ExtendedBLSPrivKey {
         // Derive the new private key using proper scalar field arithmetic
         let derived_private_key = {
             // Convert tweak to secret key
-            let tweak_key = BlsSecretKey::<Bls12381G2Impl>::from_be_bytes(key_bytes)
-                .into_option()
-                .ok_or(Error::InvalidPrivateKey)?;
+            let tweak_key =
+                BlsSecretKey::from_be_bytes_reduce(key_bytes).ok_or(Error::InvalidPrivateKey)?;
 
             // Perform scalar addition in the BLS12-381 field
-            // The SecretKey struct has a public field (0) containing the scalar
-            // We add the scalars and create a new SecretKey from the result
-            let parent_scalar = self.private_key.0;
-            let tweak_scalar = tweak_key.0;
-            let derived_scalar = parent_scalar + tweak_scalar;
-
-            BlsSecretKey::<Bls12381G2Impl>(derived_scalar)
+            self.private_key.add(&tweak_key)
         };
 
         Ok(ExtendedBLSPrivKey {
@@ -209,8 +197,8 @@ impl ExtendedBLSPrivKey {
     }
 
     /// Get the public key for this private key
-    pub fn public_key(&self) -> BlsPublicKey<Bls12381G2Impl> {
-        BlsPublicKey::from(&self.private_key)
+    pub fn public_key(&self) -> BlsPublicKey {
+        self.private_key.public_key()
     }
 
     /// Get the public key bytes (modern/IETF serialization)
@@ -225,7 +213,7 @@ impl ExtendedBLSPrivKey {
     ///
     /// This is the format dashbls/DashSync use throughout the BLS HD chain.
     pub fn public_key_bytes_legacy(&self) -> [u8; 48] {
-        let bytes = self.public_key().to_bytes_with_mode(SerializationFormat::Legacy);
+        let bytes = self.public_key().to_bytes_with_mode(BlsDerivationMode::Legacy);
         let mut array = [0u8; 48];
         array.copy_from_slice(&bytes[..48.min(bytes.len())]);
         array
@@ -256,20 +244,20 @@ impl ExtendedBLSPrivKey {
     /// Derive at a path using the modern (IETF) serialization mode
     /// (see [`Self::derive_priv`]).
     pub fn derive_path(&self, path: &DerivationPath) -> Result<Self, Error> {
-        self.derive_path_with_mode(path, SerializationFormat::Modern)
+        self.derive_path_with_mode(path, BlsDerivationMode::Modern)
     }
 
     /// Derive at a path using the legacy Dash serialization mode
     /// (see [`Self::derive_priv_legacy`]).
     pub fn derive_path_legacy(&self, path: &DerivationPath) -> Result<Self, Error> {
-        self.derive_path_with_mode(path, SerializationFormat::Legacy)
+        self.derive_path_with_mode(path, BlsDerivationMode::Legacy)
     }
 
     /// Derive at a path with an explicit serialization mode.
     pub fn derive_path_with_mode(
         &self,
         path: &DerivationPath,
-        format: SerializationFormat,
+        format: BlsDerivationMode,
     ) -> Result<Self, Error> {
         let mut key = self.clone();
         for child in path.as_ref() {
