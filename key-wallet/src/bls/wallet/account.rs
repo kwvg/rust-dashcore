@@ -3,9 +3,9 @@
 //! This module provides account functionality using BLS12-381 keys
 //! for Platform and masternode operations.
 
-use super::account_trait::AccountTrait;
+use crate::account::AccountTrait;
 use crate::account::AccountType;
-use crate::derivation_bls_bip32::{ExtendedBLSPrivKey, ExtendedBLSPubKey};
+use crate::bls::hd::{ExtendedBLSPrivKey, ExtendedBLSPubKey};
 use crate::error::{Error, Result};
 use crate::managed_account::address_pool::AddressPoolType;
 use crate::{ChildNumber, DerivationPath, Network};

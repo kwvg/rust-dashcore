@@ -6,8 +6,6 @@
 
 pub mod account_collection;
 pub mod account_trait;
-#[cfg(feature = "bls")]
-pub mod bls_account;
 pub mod coinjoin;
 #[cfg(feature = "eddsa")]
 pub mod eddsa_account;
@@ -42,7 +40,9 @@ pub use account_collection::AccountCollection;
 pub use account_trait::AccountTrait;
 pub use account_type::{AccountType, StandardAccountType};
 #[cfg(feature = "bls")]
-pub use bls_account::BLSAccount;
+pub use crate::bls::wallet::account as bls_account;
+#[cfg(feature = "bls")]
+pub use crate::bls::wallet::account::BLSAccount;
 pub use coinjoin::CoinJoinPools;
 use dashcore::{Address, PublicKey};
 #[cfg(feature = "eddsa")]
