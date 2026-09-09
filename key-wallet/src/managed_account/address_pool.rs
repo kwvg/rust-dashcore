@@ -142,34 +142,9 @@ impl KeySource {
                 Ok(DerivedKey::ECDSA(derived))
             }
             #[cfg(feature = "bls")]
-            KeySource::BLSPrivate(xprv) => {
-                // BLS HD derivation using the proper BIP32-like derivation
-                // Legacy mode: BLS pools exist only for provider operator keys,
-                // which dashbls/DashSync derive with fLegacy = true.
-                let mut derived = xprv.clone();
-                for child_num in path.as_ref() {
-                    derived = derived.derive_priv_legacy(*child_num).map_err(|e| {
-                        Error::InvalidParameter(format!("BLS derivation error: {:?}", e))
-                    })?;
-                }
-                Ok(DerivedKey::BLS(derived.public_key_bytes().to_vec()))
-            }
+            KeySource::BLSPrivate(xprv) => crate::bls::wallet::pool::derive_secret(xprv, path),
             #[cfg(feature = "bls")]
-            KeySource::BLSPublic(xpub) => {
-                // BLS public key derivation for non-hardened paths
-                let mut derived = xpub.clone();
-                for child_num in path.as_ref() {
-                    if child_num.is_hardened() {
-                        return Err(Error::InvalidParameter(
-                            "Cannot derive hardened child from BLS public key".into(),
-                        ));
-                    }
-                    derived = derived.derive_pub_legacy(*child_num).map_err(|e| {
-                        Error::InvalidParameter(format!("BLS public derivation error: {:?}", e))
-                    })?;
-                }
-                Ok(DerivedKey::BLS(derived.to_bytes().to_vec()))
-            }
+            KeySource::BLSPublic(xpub) => crate::bls::wallet::pool::derive_public(xpub, path),
             #[cfg(feature = "eddsa")]
             KeySource::EdDSAPrivate(xprv) => {
                 // EdDSA uses SLIP-0010 hardened-only derivation

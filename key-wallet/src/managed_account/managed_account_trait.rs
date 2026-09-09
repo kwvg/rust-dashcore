@@ -405,31 +405,11 @@ pub trait ManagedAccountTrait {
             ManagedAccountType::ProviderOperatorKeys {
                 addresses,
                 ..
-            } => {
-                let key_source = match account_xpub {
-                    Some(xpub) => address_pool::KeySource::BLSPublic(xpub),
-                    None => address_pool::KeySource::NoKeySource,
-                };
-
-                let info = addresses
-                    .next_unused_with_info(&key_source, add_to_state)
-                    .map_err(|_| "Failed to get next unused address")?;
-
-                let Some(PublicKeyType::BLS(pub_key_bytes)) = info.public_key else {
-                    return Err("Expected BLS public key but got different key type");
-                };
-
-                addresses.mark_index_used(info.index);
-
-                use dashcore::blsful::{Bls12381G2Impl, PublicKey, SerializationFormat};
-                let public_key = PublicKey::<Bls12381G2Impl>::from_bytes_with_mode(
-                    &pub_key_bytes,
-                    SerializationFormat::Modern,
-                )
-                .map_err(|_| "Failed to deserialize BLS public key")?;
-
-                Ok(public_key)
-            }
+            } => crate::bls::wallet::pool::next_operator_key(
+                addresses,
+                account_xpub,
+                add_to_state,
+            ),
             _ => Err("This method only works for ProviderOperatorKeys accounts"),
         }
     }

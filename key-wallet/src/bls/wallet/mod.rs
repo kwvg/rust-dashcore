@@ -2,5 +2,6 @@
 
 mod codec;
 pub mod account;
+pub(crate) mod pool;
 
 pub use account::BLSAccount;
