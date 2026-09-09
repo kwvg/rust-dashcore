@@ -631,7 +631,7 @@ mod dashbls_vectors {
             "2a680de50ab918089c65f47e6f32363eb8fbb915a61e9a10e0f882aa1c12aef9"
         );
         assert_eq!(
-            hex::encode(master.public_key_bytes_legacy()),
+            hex::encode(master.public_key_bytes_legacy().unwrap()),
             "883389cd6c289b97bfa18cc7b7c873397b4d753269d47d2fa29dda1682c1565687ccb19dd016398da7c9724f8a58bdef"
         );
         assert_eq!(
@@ -688,7 +688,7 @@ mod dashbls_vectors {
                 .unwrap();
             assert_eq!(hex::encode(child.private_key.to_be_bytes()), *sk, "sk {}", i);
             assert_eq!(
-                hex::encode(child.public_key_bytes_legacy()),
+                hex::encode(child.public_key_bytes_legacy().unwrap()),
                 *pk_legacy,
                 "pk_legacy {}",
                 i
@@ -700,7 +700,7 @@ mod dashbls_vectors {
         let account_pub = account.to_extended_pub_key();
         let child0_pub =
             account_pub.derive_pub_legacy(ChildNumber::from_normal_idx(0).unwrap()).unwrap();
-        assert_eq!(hex::encode(child0_pub.to_bytes_legacy()), expected[0].1);
+        assert_eq!(hex::encode(child0_pub.to_bytes_legacy().unwrap()), expected[0].1);
     }
 
     #[test]
@@ -727,7 +727,7 @@ mod dashbls_vectors {
             "3346dfd71627f9f31cad3ee66fe7b673c32cb077b2eb38c621d7e61c30e46dbd"
         );
         assert_eq!(
-            hex::encode(child0.public_key_bytes_legacy()),
+            hex::encode(child0.public_key_bytes_legacy().unwrap()),
             "09d8beabae708de1638487f1aff44b38e8c07d9b09f22d76329d6c8ec01e2ad4d030b660bca40ddbd222373a72c5bcef"
         );
     }
@@ -844,4 +844,49 @@ fn test_zeroize_clears_key_material() {
     assert_eq!(key.chain_code.as_ref(), &[0u8; 32]);
     assert_eq!(key.depth, 0);
     assert_eq!(key.parent_fingerprint, Fingerprint::default());
+}
+
+/// `1` and `r - 1` sum to the group order, i.e. to zero in the scalar field.
+/// A child key derived that way would put the parent scalar in reach of
+/// anyone holding the extended public key, since the tweak is derivable from
+/// it, so both key types have to refuse the sum.
+mod degenerate_sums {
+    use super::*;
+
+    const ONE: [u8; 32] = {
+        let mut bytes = [0u8; 32];
+        bytes[31] = 1;
+        bytes
+    };
+
+    const R_MINUS_ONE: [u8; 32] = [
+        0x73, 0xed, 0xa7, 0x53, 0x29, 0x9d, 0x7d, 0x48, 0x33, 0x39, 0xd8, 0x08, 0x09, 0xa1, 0xd8,
+        0x05, 0x53, 0xbd, 0xa4, 0x02, 0xff, 0xfe, 0x5b, 0xfe, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
+        0x00, 0x00,
+    ];
+
+    #[test]
+    fn secret_keys_that_sum_to_zero_are_refused() {
+        let one = BlsSecretKey::from_be_bytes_reduce(&ONE).unwrap();
+        let minus_one = BlsSecretKey::from_be_bytes_reduce(&R_MINUS_ONE).unwrap();
+
+        assert!(one.add(&minus_one).is_none());
+        assert!(minus_one.add(&one).is_none());
+    }
+
+    #[test]
+    fn public_keys_that_sum_to_the_identity_are_refused() {
+        let one = BlsSecretKey::from_be_bytes_reduce(&ONE).unwrap();
+        let minus_one = BlsSecretKey::from_be_bytes_reduce(&R_MINUS_ONE).unwrap();
+
+        assert!(one.public_key().add(&minus_one.public_key()).is_none());
+    }
+
+    #[test]
+    fn ordinary_sums_are_still_allowed() {
+        let one = BlsSecretKey::from_be_bytes_reduce(&ONE).unwrap();
+
+        let two = one.add(&one).unwrap();
+        assert_eq!(two.public_key().to_bytes(), one.public_key().add(&one.public_key()).unwrap().to_bytes());
+    }
 }

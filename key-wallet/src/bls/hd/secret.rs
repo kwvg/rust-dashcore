@@ -154,7 +154,9 @@ impl ExtendedBLSPrivKey {
             input_data.extend_from_slice(&self.private_key.to_be_bytes());
         } else {
             // Non-hardened derivation: public_key || index
-            input_data.extend_from_slice(&self.public_key().to_bytes_with_mode(format));
+            input_data.extend_from_slice(
+                &self.public_key().to_bytes_with_mode(format).ok_or(Error::InvalidPublicKey)?,
+            );
         }
         let child_bytes = u32::from(child).to_be_bytes();
         input_data.extend_from_slice(&child_bytes);
@@ -183,7 +185,7 @@ impl ExtendedBLSPrivKey {
                 BlsSecretKey::from_be_bytes_reduce(key_bytes).ok_or(Error::InvalidPrivateKey)?;
 
             // Perform scalar addition in the BLS12-381 field
-            self.private_key.add(&tweak_key)
+            self.private_key.add(&tweak_key).ok_or(Error::InvalidPrivateKey)?
         };
 
         Ok(ExtendedBLSPrivKey {
@@ -212,11 +214,14 @@ impl ExtendedBLSPrivKey {
     /// Get the public key bytes in Dash legacy serialization.
     ///
     /// This is the format dashbls/DashSync use throughout the BLS HD chain.
-    pub fn public_key_bytes_legacy(&self) -> [u8; 48] {
-        let bytes = self.public_key().to_bytes_with_mode(BlsDerivationMode::Legacy);
+    pub fn public_key_bytes_legacy(&self) -> Result<[u8; 48], Error> {
+        let bytes = self
+            .public_key()
+            .to_bytes_with_mode(BlsDerivationMode::Legacy)
+            .ok_or(Error::InvalidPublicKey)?;
         let mut array = [0u8; 48];
         array.copy_from_slice(&bytes[..48.min(bytes.len())]);
-        array
+        Ok(array)
     }
 
     /// Get the fingerprint of this key

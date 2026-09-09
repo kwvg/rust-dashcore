@@ -78,7 +78,9 @@ impl ExtendedBLSPubKey {
         // dashbls `ExtendedPublicKey::PublicChild`, whose fLegacy flag
         // corresponds to `format`.
         let mut input_data = Vec::new();
-        input_data.extend_from_slice(&self.public_key.to_bytes_with_mode(format));
+        input_data.extend_from_slice(
+            &self.public_key.to_bytes_with_mode(format).ok_or(Error::InvalidPublicKey)?,
+        );
         let child_bytes = u32::from(child).to_be_bytes();
         input_data.extend_from_slice(&child_bytes);
 
@@ -108,7 +110,8 @@ impl ExtendedBLSPubKey {
         let tweak_pubkey = tweak_privkey.public_key();
 
         // Perform elliptic curve point addition
-        let derived_pubkey = self.public_key.add(&tweak_pubkey);
+        let derived_pubkey =
+            self.public_key.add(&tweak_pubkey).ok_or(Error::InvalidPublicKey)?;
 
         Ok(ExtendedBLSPubKey {
             network: self.network,
@@ -141,11 +144,14 @@ impl ExtendedBLSPubKey {
     /// Get the public key bytes in Dash legacy serialization.
     ///
     /// This is the format dashbls/DashSync use throughout the BLS HD chain.
-    pub fn to_bytes_legacy(&self) -> [u8; 48] {
-        let bytes = self.public_key.to_bytes_with_mode(BlsDerivationMode::Legacy);
+    pub fn to_bytes_legacy(&self) -> Result<[u8; 48], Error> {
+        let bytes = self
+            .public_key
+            .to_bytes_with_mode(BlsDerivationMode::Legacy)
+            .ok_or(Error::InvalidPublicKey)?;
         let mut array = [0u8; 48];
         array.copy_from_slice(&bytes[..48.min(bytes.len())]);
-        array
+        Ok(array)
     }
 
     /// Derive at a path using the modern (IETF) serialization mode

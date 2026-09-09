@@ -3,7 +3,7 @@
 //! The only module that names the BLS library.
 
 use dashcore::blsful::{Bls12381G2Impl, PublicKey, SecretKey, SerializationFormat};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// G1 serialization format used as input to BLS HD derivation.
 ///
@@ -52,8 +52,14 @@ impl BlsSecretKey {
     }
 
     /// Adds two scalars in the BLS12-381 scalar field.
-    pub fn add(&self, tweak: &Self) -> Self {
-        BlsSecretKey(SecretKey(self.0.0 + tweak.0.0))
+    ///
+    /// `None` when the sum reduces to zero. In non-hardened derivation the
+    /// tweak is computable from the extended public key alone, so a zero
+    /// child scalar means the parent scalar is the tweak's negation and any
+    /// holder of that key can recover it.
+    pub fn add(&self, tweak: &Self) -> Option<Self> {
+        let sum = Zeroizing::new(BlsSecretKey(SecretKey(self.0.0 + tweak.0.0)).to_be_bytes());
+        Self::from_be_bytes_reduce(&sum)
     }
 
     /// Derives the corresponding public key.
@@ -84,8 +90,12 @@ impl BlsPublicKey {
     }
 
     /// Returns the encoding of the point in `mode`.
-    pub fn to_bytes_with_mode(&self, mode: BlsDerivationMode) -> Vec<u8> {
-        self.0.to_bytes_with_mode(mode.format())
+    ///
+    /// `None` when the point cannot be expressed in the target
+    /// serialization. The legacy format accepts points the modern one
+    /// rejects, so re-encoding between them is a checked operation.
+    pub fn to_bytes_with_mode(&self, mode: BlsDerivationMode) -> Option<Vec<u8>> {
+        Some(self.0.to_bytes_with_mode(mode.format()))
     }
 
     /// Returns the modern (IETF) encoding as a fixed-width array.
@@ -94,7 +104,19 @@ impl BlsPublicKey {
     }
 
     /// Adds two G1 points.
-    pub fn add(&self, other: &Self) -> Self {
-        BlsPublicKey(PublicKey(self.0.0 + other.0.0))
+    ///
+    /// `None` when the sum is the point at infinity, which is the same event
+    /// [`BlsSecretKey::add`] rejects seen from the public side, and no usable
+    /// key besides. Neither backend rejects it for us: parsing an encoded
+    /// identity fails, but aggregating to one succeeds.
+    pub fn add(&self, other: &Self) -> Option<Self> {
+        let sum = BlsPublicKey(PublicKey(self.0.0 + other.0.0));
+        (!sum.is_identity()).then_some(sum)
+    }
+
+    /// Whether the point is the identity, per bit 6 of the compressed
+    /// encoding, which both serializations spell the same way.
+    fn is_identity(&self) -> bool {
+        self.to_bytes().first().is_some_and(|byte| byte & 0x40 != 0)
     }
 }
