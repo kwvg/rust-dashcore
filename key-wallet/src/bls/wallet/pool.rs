@@ -58,7 +58,7 @@ pub(crate) fn next_operator_key(
     addresses.mark_index_used(info.index);
 
     let public_key = BlsPublicKey::from_bytes_with_mode(&pub_key_bytes, BlsDerivationMode::Modern)
-        .map_err(|_| "Failed to deserialize BLS public key")?;
+        .ok_or("Failed to deserialize BLS public key")?;
 
     Ok(public_key)
 }

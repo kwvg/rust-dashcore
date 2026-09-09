@@ -74,10 +74,8 @@ pub struct BlsPublicKey(PublicKey<Bls12381G2Impl>);
 
 impl BlsPublicKey {
     /// Parses a 48-byte G1 point encoded in `mode`.
-    pub fn from_bytes_with_mode(bytes: &[u8], mode: BlsDerivationMode) -> Result<Self, String> {
-        PublicKey::from_bytes_with_mode(bytes, mode.format())
-            .map(BlsPublicKey)
-            .map_err(|e| e.to_string())
+    pub fn from_bytes_with_mode(bytes: &[u8], mode: BlsDerivationMode) -> Option<Self> {
+        PublicKey::from_bytes_with_mode(bytes, mode.format()).ok().map(BlsPublicKey)
     }
 
     /// Returns the modern (IETF) encoding of the point.

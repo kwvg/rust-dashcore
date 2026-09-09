@@ -95,7 +95,7 @@ impl<'de> serde::Deserialize<'de> for ExtendedBLSPubKey {
         let helper = Helper::deserialize(deserializer)?;
         let public_key =
             BlsPublicKey::from_bytes_with_mode(&helper.public_key, BlsDerivationMode::Modern)
-                .map_err(|e| serde::de::Error::custom(format!("Invalid BLS public key: {}", e)))?;
+                .ok_or_else(|| serde::de::Error::custom("Invalid BLS public key"))?;
 
         Ok(ExtendedBLSPubKey {
             network: helper.network,
@@ -193,11 +193,8 @@ impl<C> bincode::Decode<C> for ExtendedBLSPubKey {
         let public_key_bytes: Vec<u8> = Vec::<u8>::decode(decoder)?;
         let public_key =
             BlsPublicKey::from_bytes_with_mode(&public_key_bytes, BlsDerivationMode::Modern)
-                .map_err(|e| {
-                    bincode::error::DecodeError::OtherString(format!(
-                        "Invalid BLS public key: {}",
-                        e
-                    ))
+                .ok_or_else(|| {
+                    bincode::error::DecodeError::OtherString("Invalid BLS public key".to_string())
                 })?;
         let chain_code = ChainCode::decode(decoder)?;
 

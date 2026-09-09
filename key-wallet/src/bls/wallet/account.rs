@@ -66,7 +66,7 @@ impl BLSAccount {
         // Create a BlsPublicKey from bytes
         let public_key =
             BlsPublicKey::from_bytes_with_mode(&bls_public_key, BlsDerivationMode::Modern)
-                .map_err(|e| Error::InvalidParameter(format!("Invalid BLS public key: {}", e)))?;
+                .ok_or_else(|| Error::InvalidParameter("Invalid BLS public key".to_string()))?;
 
         // Create an extended public key with default metadata
         let extended_key = ExtendedBLSPubKey {
