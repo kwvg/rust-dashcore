@@ -14,7 +14,7 @@ serde = ["dep:serde", "dep:serde_json", "dashcore_hashes/serde", "secp256k1/serd
 bincode = ["serde", "dep:bincode", "dep:bincode_derive", "dashcore_hashes/bincode", "dashcore/bincode"]
 bip38 = ["scrypt", "aes", "bs58", "rand"]
 eddsa = ["dashcore/eddsa"]
-bls = ["dashcore/bls"]
+bls = ["dep:dash-pkc"]
 test-utils = ["dashcore/test-utils"]
 # Keep the full `TransactionRecord` for transactions that have reached a
 # "finalized in block" state — i.e. they have a ChainLock confirming the
@@ -34,6 +34,9 @@ keep-finalized-transactions = []
 internals = { path = "../internals", package = "dashcore-private" }
 dashcore_hashes = { path = "../hashes" }
 dashcore = { path="../dash" }
+dash-pkc = { path = "../../../../base-sdk/pkgs/pkc", default-features = false, features = [
+  "bls",
+], optional = true }
 secp256k1 = { version = "0.30.0", default-features = false, features = ["hashes", "recovery", "std"] }
 bip39 = { version = "2.2.0", default-features = false, features = ["std", "chinese-simplified", "chinese-traditional", "czech", "french", "italian", "japanese", "korean", "portuguese", "spanish", "zeroize"] }
 unicode-normalization = "0.1"
