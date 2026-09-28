@@ -1,14 +1,14 @@
 //! Address tests
 
 use core::str::FromStr;
+use dashcore::ecdsa::EcdsaSecretKey;
 use dashcore::{Address, AddressType, Network as DashNetwork, ScriptBuf};
-use secp256k1::PublicKey;
 
 #[test]
 fn test_p2pkh_address_creation() {
     // Create a public key
-    let secret_key = secp256k1::SecretKey::from_secret_bytes([1u8; 32]).unwrap();
-    let public_key = PublicKey::from_secret_key(&secret_key);
+    let secret_key = EcdsaSecretKey::from_bytes(&[1u8; 32]).unwrap();
+    let public_key = secret_key.public_key();
     let dash_pubkey = dashcore::PublicKey::new(public_key);
 
     // Create P2PKH address
@@ -42,8 +42,8 @@ fn test_p2sh_address_creation() {
 #[test]
 fn test_testnet_address() {
     // Create a public key
-    let secret_key = secp256k1::SecretKey::from_secret_bytes([2u8; 32]).unwrap();
-    let public_key = PublicKey::from_secret_key(&secret_key);
+    let secret_key = EcdsaSecretKey::from_bytes(&[2u8; 32]).unwrap();
+    let public_key = secret_key.public_key();
     let dash_pubkey = dashcore::PublicKey::new(public_key);
 
     // Create testnet P2PKH address
@@ -64,7 +64,7 @@ fn test_address_parsing() {
 
     // Create a mainnet address
     let privkey_mainnet = PrivateKey::new(
-        dashcore::secp256k1::SecretKey::from_secret_bytes([0x01; 32]).unwrap(),
+        dashcore::ecdsa::EcdsaSecretKey::from_bytes(&[0x01; 32]).unwrap(),
         DashNetwork::Mainnet,
     );
     let pubkey_mainnet = privkey_mainnet.public_key();
@@ -82,7 +82,7 @@ fn test_address_parsing() {
 
     // Create a testnet address
     let privkey_testnet = PrivateKey::new(
-        dashcore::secp256k1::SecretKey::from_secret_bytes([0x02; 32]).unwrap(),
+        dashcore::ecdsa::EcdsaSecretKey::from_bytes(&[0x02; 32]).unwrap(),
         DashNetwork::Testnet,
     );
     let pubkey_testnet = privkey_testnet.public_key();
@@ -102,8 +102,8 @@ fn test_address_parsing() {
 #[test]
 fn test_address_roundtrip() {
     // Create a public key
-    let secret_key = secp256k1::SecretKey::from_secret_bytes([3u8; 32]).unwrap();
-    let public_key = PublicKey::from_secret_key(&secret_key);
+    let secret_key = EcdsaSecretKey::from_bytes(&[3u8; 32]).unwrap();
+    let public_key = secret_key.public_key();
     let dash_pubkey = dashcore::PublicKey::new(public_key);
 
     // Create address

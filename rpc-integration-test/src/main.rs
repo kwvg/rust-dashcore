@@ -414,7 +414,7 @@ fn test_verify_message(cl: &Client) {
     let message = "rust-dashcore verify_message test";
     let msg = Message::from_digest(signed_msg_hash(message).to_byte_array());
     let signature = MessageSignature::new(
-        RecoverableSignature::sign_ecdsa_recoverable(msg, &sk.inner),
+        RecoverableSignature::sign_ecdsa_recoverable(msg, &secp256k1::SecretKey::from(&sk.inner)),
         sk.compressed,
     );
 

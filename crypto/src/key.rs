@@ -11,7 +11,6 @@
 //! (de)serialized.
 
 use core::fmt::{self, Write};
-use core::ops;
 use core::str::FromStr;
 use std::io;
 
@@ -24,7 +23,10 @@ pub use secp256k1::{self, constants, Keypair, Parity, Secp256k1, Verification, X
 use serde::{Deserialize, Serialize};
 
 use crate::base58;
-use crate::ecdsa::{EcdsaError, EcdsaPublicKey, ECDSA_PK_LEN, ECDSA_PK_UNCOMPRESSED_LEN};
+use crate::ecdsa::{
+    EcdsaError, EcdsaPublicKey, EcdsaSecretKey, ECDSA_PK_LEN, ECDSA_PK_UNCOMPRESSED_LEN,
+    ECDSA_SK_LEN,
+};
 
 /// A key-related error.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -348,34 +350,34 @@ impl FromStr for PublicKey {
 }
 
 /// A Dash ECDSA private key
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PrivateKey {
     /// Whether this private key should be serialized as compressed
     pub compressed: bool,
     /// The network on which this key should be used
     pub network: Network,
     /// The actual ECDSA key
-    pub inner: secp256k1::SecretKey,
+    pub inner: EcdsaSecretKey,
 }
 
 impl PrivateKey {
     /// Constructs compressed ECDSA private key from the provided generic Secp256k1 private key
     /// and the specified network
-    pub fn new(key: secp256k1::SecretKey, network: Network) -> PrivateKey {
+    pub fn new(key: impl Into<EcdsaSecretKey>, network: Network) -> PrivateKey {
         PrivateKey {
             compressed: true,
             network,
-            inner: key,
+            inner: key.into(),
         }
     }
 
     /// Constructs uncompressed (legacy) ECDSA private key from the provided generic Secp256k1
     /// private key and the specified network
-    pub fn new_uncompressed(key: secp256k1::SecretKey, network: Network) -> PrivateKey {
+    pub fn new_uncompressed(key: impl Into<EcdsaSecretKey>, network: Network) -> PrivateKey {
         PrivateKey {
             compressed: false,
             network,
-            inner: key,
+            inner: key.into(),
         }
     }
 
@@ -383,25 +385,25 @@ impl PrivateKey {
     pub fn public_key(&self) -> PublicKey {
         PublicKey {
             compressed: self.compressed,
-            inner: self.inner.public_key().into(),
+            inner: self.inner.public_key(),
         }
     }
 
     /// Serialize the private key to bytes
-    pub fn to_bytes(self) -> Vec<u8> {
-        self.inner[..].to_vec()
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_bytes().to_vec()
     }
 
     /// Deserialize a private key from a slice
     #[deprecated(since = "0.40.0", note = "Use `from_byte_array` instead.")]
     pub fn from_slice(data: &[u8], network: Network) -> Result<PrivateKey, Error> {
-        let data = <[u8; constants::SECRET_KEY_SIZE]>::try_from(data)
-            .map_err(|_| Error::Secp256k1(secp256k1::Error::InvalidSecretKey))?;
+        let data = <[u8; ECDSA_SK_LEN]>::try_from(data)
+            .map_err(|_| Error::Ecdsa(EcdsaError::InvalidSecretKey))?;
         PrivateKey::from_byte_array(&data, network)
     }
 
     pub fn from_byte_array(data: &[u8; 32], network: Network) -> Result<PrivateKey, Error> {
-        Ok(PrivateKey::new(secp256k1::SecretKey::from_secret_bytes(*data)?, network))
+        Ok(PrivateKey::new(EcdsaSecretKey::from_bytes(data)?, network))
     }
 
     /// Format the private key to WIF format.
@@ -411,7 +413,7 @@ impl PrivateKey {
             Network::Mainnet => 204,
             Network::Testnet | Network::Devnet | Network::Regtest => 239,
         };
-        ret[1..33].copy_from_slice(&self.inner[..]);
+        ret[1..33].copy_from_slice(&*self.inner.to_bytes());
         let privkey = if self.compressed {
             ret[33] = 1;
             base58::encode_check(&ret[..])
@@ -422,7 +424,7 @@ impl PrivateKey {
     }
 
     /// Get WIF encoding of this private key.
-    pub fn to_wif(self) -> String {
+    pub fn to_wif(&self) -> String {
         let mut buf = String::new();
         buf.write_fmt(format_args!("{}", self)).unwrap();
         buf.shrink_to_fit();
@@ -450,13 +452,13 @@ impl PrivateKey {
         };
 
         let secret = data[1..]
-            .first_chunk::<{ constants::SECRET_KEY_SIZE }>()
+            .first_chunk::<ECDSA_SK_LEN>()
             .ok_or(Error::InvalidBase58PayloadLength(data.len()))?;
 
         Ok(PrivateKey {
             compressed,
             network,
-            inner: secp256k1::SecretKey::from_secret_bytes(*secret)?,
+            inner: EcdsaSecretKey::from_bytes(secret)?,
         })
     }
 }
@@ -471,13 +473,6 @@ impl FromStr for PrivateKey {
     type Err = Error;
     fn from_str(s: &str) -> Result<PrivateKey, Error> {
         PrivateKey::from_wif(s)
-    }
-}
-
-impl ops::Index<ops::RangeFull> for PrivateKey {
-    type Output = [u8];
-    fn index(&self, _: ops::RangeFull) -> &[u8] {
-        &self.inner[..]
     }
 }
 

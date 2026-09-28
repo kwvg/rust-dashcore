@@ -10,7 +10,7 @@ use std::ptr;
 
 /// Opaque type for a private key (SecretKey)
 pub struct FFIPrivateKey {
-    inner: secp256k1::SecretKey,
+    inner: dashcore::ecdsa::EcdsaSecretKey,
 }
 
 /// Opaque type for an extended private key
@@ -58,7 +58,7 @@ impl FFIExtendedPubKey {
 
 impl FFIPrivateKey {
     #[inline]
-    pub(crate) fn from_secret(inner: secp256k1::SecretKey) -> Self {
+    pub(crate) fn from_secret(inner: dashcore::ecdsa::EcdsaSecretKey) -> Self {
         FFIPrivateKey {
             inner,
         }
@@ -254,7 +254,7 @@ pub unsafe extern "C" fn extended_private_key_get_private_key(
 ) -> *mut FFIPrivateKey {
     let extended = deref_ptr!(extended_key, error);
     Box::into_raw(Box::new(FFIPrivateKey {
-        inner: extended.inner.private_key,
+        inner: extended.inner.private_key.clone(),
     }))
 }
 
@@ -277,7 +277,7 @@ pub unsafe extern "C" fn private_key_to_wif(
 
     // Convert to WIF format
     use dashcore::PrivateKey as DashPrivateKey;
-    let dash_key = DashPrivateKey::new(key.inner, network_rust);
+    let dash_key = DashPrivateKey::new(key.inner.clone(), network_rust);
 
     let wif = dash_key.to_wif();
     unwrap_or_return!(CString::new(wif), error).into_raw()

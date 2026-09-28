@@ -20,6 +20,7 @@ use secp256k1;
 use serde::{Deserialize, Serialize};
 
 use thiserror::Error as ThisError;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::sighash::{EcdsaSighashType, NonStandardSighashType};
 
@@ -291,6 +292,9 @@ pub enum EcdsaError {
     /// Public key bytes are not a usable curve point.
     #[error("invalid secp256k1 public key")]
     InvalidPublicKey,
+    /// Secret key bytes are zero or not below the curve order.
+    #[error("invalid secp256k1 secret key")]
+    InvalidSecretKey,
     /// Tweak is out of range or produced the point at infinity.
     #[error("invalid secp256k1 tweak")]
     InvalidTweak,
@@ -430,31 +434,167 @@ impl<'de> serde::Deserialize<'de> for EcdsaPublicKey {
 
             d.deserialize_str(HexVisitor)
         } else {
-            struct TupleVisitor;
+            let bytes = d.deserialize_tuple(ECDSA_PK_LEN, ByteTupleVisitor::<ECDSA_PK_LEN>)?;
+            EcdsaPublicKey::from_bytes(&bytes).map_err(serde::de::Error::custom)
+        }
+    }
+}
 
-            impl<'de> serde::de::Visitor<'de> for TupleVisitor {
-                type Value = EcdsaPublicKey;
+/// A secp256k1 secret key (a scalar, without a serialization form).
+///
+/// Not `Copy`: the scalar is erased when the key is dropped, and an implicit
+/// copy would outlive that. The backend's type stays behind this one; convert
+/// with [`From`] where a backend-only API (Schnorr) still needs it.
+#[derive(Clone, Eq, PartialEq)]
+pub struct EcdsaSecretKey(secp256k1::SecretKey);
+
+impl EcdsaSecretKey {
+    /// Wraps a big-endian scalar.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidSecretKey` when the scalar is zero or not below the
+    /// curve order.
+    pub fn from_bytes(bytes: &[u8; ECDSA_SK_LEN]) -> Result<Self, EcdsaError> {
+        secp256k1::SecretKey::from_secret_bytes(*bytes)
+            .map(Self)
+            .map_err(|_| EcdsaError::InvalidSecretKey)
+    }
+
+    /// Copies out the big-endian scalar.
+    pub fn to_bytes(&self) -> Zeroizing<[u8; ECDSA_SK_LEN]> {
+        Zeroizing::new(self.0.to_secret_bytes())
+    }
+
+    /// Derives the corresponding public key.
+    pub fn public_key(&self) -> EcdsaPublicKey {
+        EcdsaPublicKey(self.0.public_key())
+    }
+
+    /// Adds `tweak` to the scalar.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidTweak` when the tweak is not a valid scalar or the sum
+    /// is zero.
+    pub fn add_tweak(&self, tweak: &[u8; ECDSA_SK_LEN]) -> Result<Self, EcdsaError> {
+        let tweak =
+            secp256k1::Scalar::from_be_bytes(*tweak).map_err(|_| EcdsaError::InvalidTweak)?;
+        self.0.add_tweak(&tweak).map(Self).map_err(|_| EcdsaError::InvalidTweak)
+    }
+
+    /// Multiplies the scalar by `tweak`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidTweak` when the tweak is zero or not a valid scalar.
+    pub fn mul_tweak(&self, tweak: &[u8; ECDSA_SK_LEN]) -> Result<Self, EcdsaError> {
+        let tweak =
+            secp256k1::Scalar::from_be_bytes(*tweak).map_err(|_| EcdsaError::InvalidTweak)?;
+        self.0.mul_tweak(&tweak).map(Self).map_err(|_| EcdsaError::InvalidTweak)
+    }
+}
+
+impl Zeroize for EcdsaSecretKey {
+    fn zeroize(&mut self) {
+        self.0.non_secure_erase();
+    }
+}
+
+impl Drop for EcdsaSecretKey {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl fmt::Debug for EcdsaSecretKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("EcdsaSecretKey(..)")
+    }
+}
+
+impl From<secp256k1::SecretKey> for EcdsaSecretKey {
+    fn from(inner: secp256k1::SecretKey) -> Self {
+        Self(inner)
+    }
+}
+
+impl From<&EcdsaSecretKey> for secp256k1::SecretKey {
+    fn from(sk: &EcdsaSecretKey) -> Self {
+        sk.0
+    }
+}
+
+impl From<EcdsaSecretKey> for secp256k1::SecretKey {
+    fn from(sk: EcdsaSecretKey) -> Self {
+        Self::from(&sk)
+    }
+}
+
+/// A hex string in human-readable formats, the bare 32-byte tuple otherwise.
+#[cfg(feature = "serde")]
+impl serde::Serialize for EcdsaSecretKey {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeTuple;
+
+        let bytes = self.to_bytes();
+        if s.is_human_readable() {
+            s.serialize_str(&Zeroizing::new(bytes.to_lower_hex_string()))
+        } else {
+            let mut tuple = s.serialize_tuple(ECDSA_SK_LEN)?;
+            for byte in bytes.iter() {
+                tuple.serialize_element(byte)?;
+            }
+            tuple.end()
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for EcdsaSecretKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let bytes = if d.is_human_readable() {
+            struct HexVisitor;
+
+            impl serde::de::Visitor<'_> for HexVisitor {
+                type Value = Zeroizing<[u8; ECDSA_SK_LEN]>;
 
                 fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                    write!(f, "a {}-byte tuple", ECDSA_PK_LEN)
+                    f.write_str("a hex string representing a 32-byte secret key")
                 }
 
-                fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                    self,
-                    mut seq: A,
-                ) -> Result<Self::Value, A::Error> {
-                    let mut bytes = [0u8; ECDSA_PK_LEN];
-                    for (i, byte) in bytes.iter_mut().enumerate() {
-                        *byte = seq
-                            .next_element()?
-                            .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
-                    }
-                    EcdsaPublicKey::from_bytes(&bytes).map_err(serde::de::Error::custom)
+                fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                    <[u8; ECDSA_SK_LEN]>::from_hex(v).map(Zeroizing::new).map_err(E::custom)
                 }
             }
 
-            d.deserialize_tuple(ECDSA_PK_LEN, TupleVisitor)
+            d.deserialize_str(HexVisitor)?
+        } else {
+            Zeroizing::new(d.deserialize_tuple(ECDSA_SK_LEN, ByteTupleVisitor::<ECDSA_SK_LEN>)?)
+        };
+        EcdsaSecretKey::from_bytes(&bytes).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Reads a fixed-size tuple of bytes, the non-human-readable key encoding.
+#[cfg(feature = "serde")]
+struct ByteTupleVisitor<const N: usize>;
+
+#[cfg(feature = "serde")]
+impl<'de, const N: usize> serde::de::Visitor<'de> for ByteTupleVisitor<N> {
+    type Value = [u8; N];
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "a {}-byte tuple", N)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut bytes = [0u8; N];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte =
+                seq.next_element()?.ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
         }
+        Ok(bytes)
     }
 }
 

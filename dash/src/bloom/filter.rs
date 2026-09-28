@@ -209,7 +209,7 @@ impl Decodable for BloomFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::key::{PrivateKey, secp256k1};
+    use crate::crypto::key::PrivateKey;
 
     #[test]
     fn test_bloom_filter_basic() {
@@ -353,7 +353,7 @@ mod tests {
                 .unwrap()
                 .try_into()
                 .unwrap();
-        let secret_key = secp256k1::SecretKey::from_secret_bytes(privkey_bytes).unwrap();
+        let secret_key = crate::ecdsa::EcdsaSecretKey::from_bytes(&privkey_bytes).unwrap();
         let privkey =
             PrivateKey::new_uncompressed(secret_key, crate::network::constants::Network::Mainnet);
         let pubkey = privkey.public_key();

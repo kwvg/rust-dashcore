@@ -31,6 +31,7 @@ secp256k1 = { version = "0.33.1" }
 serde = { version = "1.0.219", default-features = false, features = [ "derive", "alloc" ], optional = true }
 thiserror = "2"
 tracing = { version = "0.1", optional = true }
+zeroize = { version = "1.8" }
 
 [lints.rust]
 unexpected_cfgs = { level = "deny", check-cfg = ['cfg(bench)', 'cfg(fuzzing)', 'cfg(kani)'] }
