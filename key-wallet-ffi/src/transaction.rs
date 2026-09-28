@@ -1067,7 +1067,7 @@ mod tests {
                 let sig = dashcore::ecdsa::Signature::from_slice(&pushes[0]).unwrap();
                 assert_eq!(sig.hash_ty.to_u32(), sighash_type);
                 assert_eq!(pushes[1], pubkey.to_bytes());
-                sig.sig.verify(Message::from_digest(sighash), &pubkey.inner).unwrap();
+                sig.sig.verify(Message::from_digest(sighash), &pubkey.inner.into()).unwrap();
             }
 
             transaction_destroy(tx);

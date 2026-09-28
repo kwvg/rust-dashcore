@@ -204,8 +204,8 @@ mod tests {
 
         let kp = Keypair::new(&mut rand::rng());
 
-        let _ = PublicKey::new(kp);
-        let _ = PublicKey::new_uncompressed(kp);
+        let _ = PublicKey::new(secp256k1::PublicKey::from(kp));
+        let _ = PublicKey::new_uncompressed(secp256k1::PublicKey::from(kp));
     }
 
     #[test]

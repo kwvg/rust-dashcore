@@ -24,6 +24,7 @@ pub use secp256k1::{self, constants, Keypair, Parity, Secp256k1, Verification, X
 use serde::{Deserialize, Serialize};
 
 use crate::base58;
+use crate::ecdsa::{EcdsaError, EcdsaPublicKey, ECDSA_PK_LEN, ECDSA_PK_UNCOMPRESSED_LEN};
 
 /// A key-related error.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -33,6 +34,8 @@ pub enum Error {
     Base58(base58::Error),
     /// secp256k1-related error
     Secp256k1(secp256k1::Error),
+    /// ECDSA key error
+    Ecdsa(EcdsaError),
     /// Invalid key prefix error
     InvalidKeyPrefix(u8),
     /// The WIF or extended key version byte was not one we recognise.
@@ -52,6 +55,7 @@ impl fmt::Display for Error {
         match self {
             Error::Base58(e) => write_err!(f, "key base58 error"; e),
             Error::Secp256k1(e) => write_err!(f, "key secp256k1 error"; e),
+            Error::Ecdsa(e) => write_err!(f, "key ECDSA error"; e),
             Error::InvalidAddressVersion(v) => {
                 write!(f, "address version {} is invalid for this base58 type", v)
             }
@@ -77,6 +81,7 @@ impl std::error::Error for Error {
         match self {
             Base58(e) => Some(e),
             Secp256k1(e) => Some(e),
+            Ecdsa(e) => Some(e),
             Hex(e) => Some(e),
             InvalidAddressVersion(_)
             | InvalidBase58PayloadLength(_)
@@ -102,6 +107,13 @@ impl From<secp256k1::Error> for Error {
 }
 
 #[doc(hidden)]
+impl From<EcdsaError> for Error {
+    fn from(e: EcdsaError) -> Error {
+        Error::Ecdsa(e)
+    }
+}
+
+#[doc(hidden)]
 impl From<hex::Error> for Error {
     fn from(e: hex::Error) -> Self {
         Error::Hex(e)
@@ -114,12 +126,12 @@ pub struct PublicKey {
     /// Whether this public key should be serialized as compressed
     pub compressed: bool,
     /// The actual ECDSA key
-    pub inner: secp256k1::PublicKey,
+    pub inner: EcdsaPublicKey,
 }
 
 impl PublicKey {
     /// Constructs compressed ECDSA public key from the provided generic Secp256k1 public key
-    pub fn new(key: impl Into<secp256k1::PublicKey>) -> PublicKey {
+    pub fn new(key: impl Into<EcdsaPublicKey>) -> PublicKey {
         PublicKey {
             compressed: true,
             inner: key.into(),
@@ -128,7 +140,7 @@ impl PublicKey {
 
     /// Constructs uncompressed (legacy) ECDSA public key from the provided generic Secp256k1
     /// public key
-    pub fn new_uncompressed(key: impl Into<secp256k1::PublicKey>) -> PublicKey {
+    pub fn new_uncompressed(key: impl Into<EcdsaPublicKey>) -> PublicKey {
         PublicKey {
             compressed: false,
             inner: key.into(),
@@ -139,9 +151,9 @@ impl PublicKey {
     /// `compressed` says, without allocating.
     pub fn with_serialized<R, F: FnOnce(&[u8]) -> R>(&self, f: F) -> R {
         if self.compressed {
-            f(&self.inner.serialize())
+            f(&self.inner.to_compressed())
         } else {
-            f(&self.inner.serialize_uncompressed())
+            f(&self.inner.to_uncompressed())
         }
     }
 
@@ -236,12 +248,12 @@ impl PublicKey {
     /// ```
     pub fn to_sort_key(self) -> SortKey {
         if self.compressed {
-            let bytes = self.inner.serialize();
+            let bytes = self.inner.to_compressed();
             let mut res = [0; 32];
             res[..].copy_from_slice(&bytes[1..33]);
             SortKey(bytes[0], res, [0; 32])
         } else {
-            let bytes = self.inner.serialize_uncompressed();
+            let bytes = self.inner.to_uncompressed();
             let mut res_left = [0; 32];
             let mut res_right = [0; 32];
             res_left[..].copy_from_slice(&bytes[1..33]);
@@ -252,19 +264,13 @@ impl PublicKey {
 
     /// Deserialize a public key from a slice
     pub fn from_slice(data: &[u8]) -> Result<PublicKey, Error> {
-        let (compressed, inner) = match data.len() {
-            constants::PUBLIC_KEY_SIZE => {
-                let data = <[u8; constants::PUBLIC_KEY_SIZE]>::try_from(data)
-                    .map_err(|_| Error::Secp256k1(secp256k1::Error::InvalidPublicKey))?;
-                (true, secp256k1::PublicKey::from_byte_array_compressed(data)?)
-            }
-            constants::UNCOMPRESSED_PUBLIC_KEY_SIZE => {
+        let compressed = match data.len() {
+            ECDSA_PK_LEN => true,
+            ECDSA_PK_UNCOMPRESSED_LEN => {
                 if data[0] != 0x04 {
                     return Err(Error::InvalidKeyPrefix(data[0]));
                 }
-                let data = <[u8; constants::UNCOMPRESSED_PUBLIC_KEY_SIZE]>::try_from(data)
-                    .map_err(|_| Error::Secp256k1(secp256k1::Error::InvalidPublicKey))?;
-                (false, secp256k1::PublicKey::from_byte_array_uncompressed(data)?)
+                false
             }
             len => {
                 return Err(Error::InvalidBase58PayloadLength(len));
@@ -273,7 +279,7 @@ impl PublicKey {
 
         Ok(PublicKey {
             compressed,
-            inner,
+            inner: EcdsaPublicKey::from_bytes(data)?,
         })
     }
 
@@ -291,7 +297,7 @@ impl PublicKey {
     pub fn wpubkey_hash(&self) -> Option<WPubkeyHash> {
         if self.compressed {
             Some(WPubkeyHash::from_byte_array(
-                hash160::Hash::hash(&self.inner.serialize()).to_byte_array(),
+                hash160::Hash::hash(&self.inner.to_compressed()).to_byte_array(),
             ))
         } else {
             // We can't create witness pubkey hashes for an uncompressed
@@ -377,7 +383,7 @@ impl PrivateKey {
     pub fn public_key(&self) -> PublicKey {
         PublicKey {
             compressed: self.compressed,
-            inner: self.inner.public_key(),
+            inner: self.inner.public_key().into(),
         }
     }
 

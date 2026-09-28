@@ -20,7 +20,7 @@ pub struct FFIExtendedPrivKey {
 
 /// Opaque type for a public key
 pub struct FFIPublicKey {
-    inner: secp256k1::PublicKey,
+    inner: dashcore::ecdsa::EcdsaPublicKey,
 }
 
 /// Opaque type for an extended public key
@@ -449,7 +449,7 @@ pub unsafe extern "C" fn public_key_to_hex(
     error: *mut FFIError,
 ) -> *mut c_char {
     let key = deref_ptr!(key, error);
-    unwrap_or_return!(CString::new(hex::encode(key.inner.serialize())), error).into_raw()
+    unwrap_or_return!(CString::new(hex::encode(key.inner.to_compressed())), error).into_raw()
 }
 
 /// Convert derivation path string to indices

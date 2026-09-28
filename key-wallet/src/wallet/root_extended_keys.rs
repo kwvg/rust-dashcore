@@ -9,6 +9,7 @@ use crate::{Error, Network, Wallet};
 use bincode::{BorrowDecode, Decode, Encode};
 #[cfg(feature = "bls")]
 use dashcore::bls_sig_utils::BlsSkBytes;
+use dashcore::ecdsa::EcdsaPublicKey;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
@@ -117,7 +118,8 @@ impl RootExtendedPrivKey {
 
     /// Get the corresponding public key
     pub fn to_root_extended_pub_key(&self) -> RootExtendedPubKey {
-        let public_key = secp256k1::PublicKey::from_secret_key(&self.root_private_key);
+        let public_key =
+            EcdsaPublicKey::from(secp256k1::PublicKey::from_secret_key(&self.root_private_key));
         RootExtendedPubKey {
             root_public_key: public_key,
             root_chain_code: self.root_chain_code,
@@ -211,7 +213,7 @@ impl FromOnNetwork<RootExtendedPrivKey> for ExtendedPrivKey {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct RootExtendedPubKey {
-    pub root_public_key: secp256k1::PublicKey,
+    pub root_public_key: EcdsaPublicKey,
     pub root_chain_code: ChainCode,
 }
 
@@ -219,7 +221,7 @@ impl zeroize::Zeroize for RootExtendedPubKey {
     fn zeroize(&mut self) {
         // Replace the public key with a dummy value (generator point G)
         // This is a best-effort zeroization since PublicKey doesn't implement Zeroize
-        self.root_public_key = secp256k1::PublicKey::from_byte_array_compressed([
+        self.root_public_key = EcdsaPublicKey::from_bytes(&[
             0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce,
             0x87, 0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81,
             0x5b, 0x16, 0xf8, 0x17, 0x98,
@@ -233,7 +235,7 @@ impl zeroize::Zeroize for RootExtendedPubKey {
 
 impl RootExtendedPubKey {
     /// Create a new RootExtendedPubKey
-    pub fn new(root_public_key: secp256k1::PublicKey, root_chain_code: ChainCode) -> Self {
+    pub fn new(root_public_key: EcdsaPublicKey, root_chain_code: ChainCode) -> Self {
         Self {
             root_public_key,
             root_chain_code,
@@ -268,7 +270,7 @@ impl Encode for RootExtendedPubKey {
         encoder: &mut E,
     ) -> Result<(), bincode::error::EncodeError> {
         // Encode the public key as serialized bytes (33 bytes compressed)
-        let public_key_bytes = self.root_public_key.serialize();
+        let public_key_bytes = self.root_public_key.to_compressed();
         bincode::Encode::encode(&public_key_bytes, encoder)?;
 
         // Encode the chain code
@@ -285,10 +287,9 @@ impl<C> Decode<C> for RootExtendedPubKey {
     ) -> Result<Self, bincode::error::DecodeError> {
         // Decode the public key bytes
         let public_key_bytes: [u8; 33] = bincode::Decode::decode(decoder)?;
-        let root_public_key = secp256k1::PublicKey::from_byte_array_compressed(public_key_bytes)
-            .map_err(|e| {
-                bincode::error::DecodeError::OtherString(format!("Invalid public key: {}", e))
-            })?;
+        let root_public_key = EcdsaPublicKey::from_bytes(&public_key_bytes).map_err(|e| {
+            bincode::error::DecodeError::OtherString(format!("Invalid public key: {}", e))
+        })?;
 
         // Decode the chain code
         let root_chain_code: ChainCode = bincode::Decode::decode(decoder)?;

@@ -19,6 +19,8 @@ use secp256k1;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use thiserror::Error as ThisError;
+
 use crate::sighash::{EcdsaSighashType, NonStandardSighashType};
 
 const MAX_SIG_LEN: usize = 73;
@@ -270,6 +272,189 @@ impl From<NonStandardSighashType> for Error {
 impl From<hex::Error> for Error {
     fn from(err: hex::Error) -> Self {
         Error::HexEncoding(err)
+    }
+}
+
+/// Compressed SEC1 public key length.
+pub const ECDSA_PK_LEN: usize = 33;
+
+/// Uncompressed SEC1 public key length.
+pub const ECDSA_PK_UNCOMPRESSED_LEN: usize = 65;
+
+/// Scalar (secret key or tweak) length.
+pub const ECDSA_SK_LEN: usize = 32;
+
+/// Errors produced by secp256k1 operations.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, ThisError)]
+#[non_exhaustive]
+pub enum EcdsaError {
+    /// Public key bytes are not a usable curve point.
+    #[error("invalid secp256k1 public key")]
+    InvalidPublicKey,
+    /// Tweak is out of range or produced the point at infinity.
+    #[error("invalid secp256k1 tweak")]
+    InvalidTweak,
+}
+
+/// A secp256k1 public key (a curve point, without a serialization form).
+///
+/// The backend's type stays behind this one; convert with [`From`] where a
+/// backend-only API (x-only keys, Schnorr) still needs it.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct EcdsaPublicKey(secp256k1::PublicKey);
+
+impl EcdsaPublicKey {
+    /// Parses a compressed (33-byte) or uncompressed (65-byte) SEC1 encoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidPublicKey` when the bytes are not a valid encoding of a
+    /// curve point.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, EcdsaError> {
+        let inner = if let Ok(bytes) = <[u8; ECDSA_PK_LEN]>::try_from(bytes) {
+            secp256k1::PublicKey::from_byte_array_compressed(bytes)
+        } else if let Ok(bytes) = <[u8; ECDSA_PK_UNCOMPRESSED_LEN]>::try_from(bytes) {
+            secp256k1::PublicKey::from_byte_array_uncompressed(bytes)
+        } else {
+            return Err(EcdsaError::InvalidPublicKey);
+        };
+        inner.map(Self).map_err(|_| EcdsaError::InvalidPublicKey)
+    }
+
+    /// The compressed SEC1 encoding.
+    pub fn to_compressed(&self) -> [u8; ECDSA_PK_LEN] {
+        self.0.serialize()
+    }
+
+    /// The uncompressed SEC1 encoding.
+    pub fn to_uncompressed(&self) -> [u8; ECDSA_PK_UNCOMPRESSED_LEN] {
+        self.0.serialize_uncompressed()
+    }
+
+    /// Adds `tweak * G` to the point.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidTweak` when the tweak is not a valid scalar or the sum
+    /// is the point at infinity.
+    pub fn add_tweak(&self, tweak: &[u8; ECDSA_SK_LEN]) -> Result<Self, EcdsaError> {
+        let tweak =
+            secp256k1::Scalar::from_be_bytes(*tweak).map_err(|_| EcdsaError::InvalidTweak)?;
+        self.0.add_exp_tweak(&tweak).map(Self).map_err(|_| EcdsaError::InvalidTweak)
+    }
+}
+
+/// Ordered by compressed encoding, as the backend orders its points.
+impl Ord for EcdsaPublicKey {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.to_compressed().cmp(&other.to_compressed())
+    }
+}
+
+impl PartialOrd for EcdsaPublicKey {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl fmt::Debug for EcdsaPublicKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "EcdsaPublicKey({})", self)
+    }
+}
+
+/// Hex of the compressed encoding.
+impl fmt::Display for EcdsaPublicKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::LowerHex::fmt(&self.to_compressed().as_hex(), f)
+    }
+}
+
+/// Hex of either SEC1 encoding.
+impl FromStr for EcdsaPublicKey {
+    type Err = EcdsaError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_bytes(&Vec::from_hex(s).map_err(|_| EcdsaError::InvalidPublicKey)?)
+    }
+}
+
+impl From<secp256k1::PublicKey> for EcdsaPublicKey {
+    fn from(inner: secp256k1::PublicKey) -> Self {
+        Self(inner)
+    }
+}
+
+impl From<EcdsaPublicKey> for secp256k1::PublicKey {
+    fn from(pk: EcdsaPublicKey) -> Self {
+        pk.0
+    }
+}
+
+/// A hex string of the compressed encoding in human-readable formats, the
+/// bare 33-byte tuple otherwise.
+#[cfg(feature = "serde")]
+impl serde::Serialize for EcdsaPublicKey {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeTuple;
+
+        if s.is_human_readable() {
+            s.collect_str(self)
+        } else {
+            let mut tuple = s.serialize_tuple(ECDSA_PK_LEN)?;
+            for byte in self.to_compressed() {
+                tuple.serialize_element(&byte)?;
+            }
+            tuple.end()
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for EcdsaPublicKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        if d.is_human_readable() {
+            struct HexVisitor;
+
+            impl serde::de::Visitor<'_> for HexVisitor {
+                type Value = EcdsaPublicKey;
+
+                fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    f.write_str("an ASCII hex string")
+                }
+
+                fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                    v.parse().map_err(E::custom)
+                }
+            }
+
+            d.deserialize_str(HexVisitor)
+        } else {
+            struct TupleVisitor;
+
+            impl<'de> serde::de::Visitor<'de> for TupleVisitor {
+                type Value = EcdsaPublicKey;
+
+                fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    write!(f, "a {}-byte tuple", ECDSA_PK_LEN)
+                }
+
+                fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                    self,
+                    mut seq: A,
+                ) -> Result<Self::Value, A::Error> {
+                    let mut bytes = [0u8; ECDSA_PK_LEN];
+                    for (i, byte) in bytes.iter_mut().enumerate() {
+                        *byte = seq
+                            .next_element()?
+                            .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
+                    }
+                    EcdsaPublicKey::from_bytes(&bytes).map_err(serde::de::Error::custom)
+                }
+            }
+
+            d.deserialize_tuple(ECDSA_PK_LEN, TupleVisitor)
+        }
     }
 }
 
