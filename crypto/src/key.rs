@@ -743,6 +743,41 @@ mod tests {
         assert_eq!(key1.to_sort_key(), expected1);
         assert_eq!(key2.to_sort_key(), expected2);
     }
+    /// `BTreeMap<PublicKey, _>` (the PSBT key maps among them) iterates in
+    /// this order: uncompressed keys first, then by compressed encoding.
+    #[test]
+    fn pubkey_ord_is_compression_then_compressed_encoding() {
+        let pk = |s| PublicKey::from_str(s).unwrap();
+        let odd_y = "04c4b0bbb339aa236bff38dbe6a451e111972a7909a126bc424013cba2ec33bc38e98ac269ffe028345c31ac8d0a365f29c8f7e7cfccac72f84e1acd02bc554f35";
+        let even_y = "04c4b0bbb339aa236bff38dbe6a451e111972a7909a126bc424013cba2ec33bc3816753d96001fd7cba3ce5372f5c9a0d63708183033538d07b1e532fc43aaacfa";
+        // A larger x than `odd_y`, but an even y: sorts before it compressed.
+        let larger_x = "04c6bec3b07586a4b085a78cbb97e9bab6f1d3c9ebf299b65dec85213c5eacd44487de86017183120bb7ea3b6c6660c5037615fe1add2a73f800cbeeae22c60438";
+        let smaller_x = "045d753414fa292ea5b8f56e39cfb6a0287b2546231a5cb05c4b14ab4b463d171f5128148985b23eccb1e2905374873b1f09b9487f47afa6b1f2b0083ac8b4f7e8";
+        let mut keys = [
+            pk("038f47dcd43ba6d97fc9ed2e3bba09b175a45fac55f0683e8cf771e8ced4572354"),
+            pk(odd_y),
+            pk("0234dd69c56c36a41230d573d68adeae0030c9bc0bf26f24d3e1b64c604d293c68"),
+            pk(larger_x),
+            pk("028bde91b10013e08949a318018fedbd896534a549a278e220169ee2a36517c7aa"),
+            pk(even_y),
+            pk(smaller_x),
+        ];
+        keys.sort();
+        let sorted: Vec<_> = keys.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            sorted,
+            [
+                smaller_x,
+                even_y,
+                larger_x,
+                odd_y,
+                "0234dd69c56c36a41230d573d68adeae0030c9bc0bf26f24d3e1b64c604d293c68",
+                "028bde91b10013e08949a318018fedbd896534a549a278e220169ee2a36517c7aa",
+                "038f47dcd43ba6d97fc9ed2e3bba09b175a45fac55f0683e8cf771e8ced4572354",
+            ]
+        );
+    }
+
     #[test]
     fn pubkey_sort() {
         struct Vector {
