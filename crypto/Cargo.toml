@@ -27,7 +27,7 @@ dash-types = { workspace = true, features = ["codec"] }
 dashcore_hashes = { path = "../hashes" }
 hex = { version = "0.4" }
 internals = { path = "../internals", package = "dashcore-private" }
-secp256k1 = { version = "0.33.1" }
+secp256k1 = { version = "0.33.1", features = ["recovery"] }
 serde = { version = "1.0.219", default-features = false, features = [ "derive", "alloc" ], optional = true }
 thiserror = "2"
 tracing = { version = "0.1", optional = true }

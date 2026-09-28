@@ -9,8 +9,8 @@
 pub mod ecdsa {
     pub use dashcore_crypto::ecdsa::{
         ECDSA_PK_LEN, ECDSA_PK_UNCOMPRESSED_LEN, ECDSA_SIG_LEN, ECDSA_SK_LEN, EcdsaDerSig,
-        EcdsaError, EcdsaPublicKey, EcdsaSecretKey, EcdsaSignature, Error, SerializedSignature,
-        Signature,
+        EcdsaError, EcdsaPublicKey, EcdsaRecSignature, EcdsaSecretKey, EcdsaSignature, Error,
+        SerializedSignature, Signature,
     };
 }
 pub mod key;

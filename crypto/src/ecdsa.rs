@@ -298,14 +298,20 @@ pub enum EcdsaError {
     /// Secret key bytes are zero or not below the curve order.
     #[error("invalid secp256k1 secret key")]
     InvalidSecretKey,
+    /// Recovery id is outside `0..=3`.
+    #[error("invalid secp256k1 recovery id")]
+    InvalidRecoveryId,
     /// Signature bytes are not a valid encoding.
     #[error("invalid secp256k1 signature")]
     InvalidSignature,
+    /// No public key could be recovered from the signature and message.
+    #[error("secp256k1 public key recovery failed")]
+    RecoveryFailed,
     /// Tweak is out of range or produced the point at infinity.
     #[error("invalid secp256k1 tweak")]
     InvalidTweak,
     /// Signature does not verify against the key and message.
-    #[error("secp256k1 signature verification failed")]
+    #[error("signature failed verification")]
     VerifyFailed,
 }
 
@@ -370,6 +376,19 @@ impl EcdsaPublicKey {
             .0
             .verify(secp256k1::Message::from_digest(*msg_hash), &self.0)
             .map_err(|_| EcdsaError::VerifyFailed)
+    }
+
+    /// Recovers the signing key from a recoverable signature over the 32-byte
+    /// prehashed message.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RecoveryFailed` when no key can be recovered.
+    pub fn recover(msg_hash: &[u8; 32], sig: &EcdsaRecSignature) -> Result<Self, EcdsaError> {
+        sig.0
+            .recover(secp256k1::Message::from_digest(*msg_hash))
+            .map(Self)
+            .map_err(|_| EcdsaError::RecoveryFailed)
     }
 }
 
@@ -523,6 +542,15 @@ impl EcdsaSecretKey {
     /// ground).
     pub fn sign(&self, msg_hash: &[u8; 32]) -> EcdsaSignature {
         EcdsaSignature(secp256k1::ecdsa::sign_low_r(
+            secp256k1::Message::from_digest(*msg_hash),
+            &self.0,
+        ))
+    }
+
+    /// Signs a 32-byte prehashed message recoverably (RFC 6979, low-S
+    /// normalized, not ground).
+    pub fn sign_recoverable(&self, msg_hash: &[u8; 32]) -> EcdsaRecSignature {
+        EcdsaRecSignature(secp256k1::ecdsa::RecoverableSignature::sign_ecdsa_recoverable(
             secp256k1::Message::from_digest(*msg_hash),
             &self.0,
         ))
@@ -732,6 +760,62 @@ impl<'de> serde::Deserialize<'de> for EcdsaSignature {
         } else {
             d.deserialize_bytes(DerVisitor)
         }
+    }
+}
+
+/// A recoverable secp256k1 ECDSA signature: the signature and the recovery
+/// id (`0..=3`) that selects the signing key among the candidates.
+///
+/// The backend's type stays behind this one; convert with [`From`] where a
+/// backend-only API still needs it.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct EcdsaRecSignature(secp256k1::ecdsa::RecoverableSignature);
+
+impl EcdsaRecSignature {
+    /// Pairs a signature with its recovery id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidRecoveryId` when `recovery_id` is not in `0..=3`.
+    pub fn from_parts(sig: EcdsaSignature, recovery_id: u8) -> Result<Self, EcdsaError> {
+        let recovery_id = secp256k1::ecdsa::RecoveryId::try_from(i32::from(recovery_id))
+            .map_err(|_| EcdsaError::InvalidRecoveryId)?;
+        secp256k1::ecdsa::RecoverableSignature::from_compact(&sig.to_bytes(), recovery_id)
+            .map(Self)
+            .map_err(|_| EcdsaError::InvalidSignature)
+    }
+
+    /// The recovery id, in `0..=3`.
+    pub fn recovery_id(&self) -> u8 {
+        self.0.serialize_compact().0.to_u8()
+    }
+
+    /// The signature without its recovery id.
+    pub fn signature(&self) -> EcdsaSignature {
+        EcdsaSignature(self.0.to_standard())
+    }
+
+    /// The compact (`r || s`) encoding of the signature.
+    pub fn to_compact(&self) -> [u8; ECDSA_SIG_LEN] {
+        self.0.serialize_compact().1
+    }
+}
+
+impl fmt::Debug for EcdsaRecSignature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "EcdsaRecSignature({}, {:x})", self.recovery_id(), self.to_compact().as_hex())
+    }
+}
+
+impl From<secp256k1::ecdsa::RecoverableSignature> for EcdsaRecSignature {
+    fn from(inner: secp256k1::ecdsa::RecoverableSignature) -> Self {
+        Self(inner)
+    }
+}
+
+impl From<EcdsaRecSignature> for secp256k1::ecdsa::RecoverableSignature {
+    fn from(sig: EcdsaRecSignature) -> Self {
+        sig.0
     }
 }
 

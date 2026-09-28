@@ -406,15 +406,13 @@ fn test_dump_private_key(cl: &Client) {
 }
 
 fn test_verify_message(cl: &Client) {
-    use dashcore_rpc::dashcore::secp256k1::{Message, ecdsa::RecoverableSignature};
     use dashcore_rpc::dashcore::sign_message::{MessageSignature, signed_msg_hash};
 
     let addr = cl.get_new_address(None).unwrap().require_network(*NET).unwrap();
     let sk = cl.dump_private_key(&addr).unwrap();
     let message = "rust-dashcore verify_message test";
-    let msg = Message::from_digest(signed_msg_hash(message).to_byte_array());
     let signature = MessageSignature::new(
-        RecoverableSignature::sign_ecdsa_recoverable(msg, &secp256k1::SecretKey::from(&sk.inner)),
+        sk.inner.sign_recoverable(signed_msg_hash(message).as_byte_array()),
         sk.compressed,
     );
 
