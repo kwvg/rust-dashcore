@@ -397,3 +397,62 @@ impl Wallet {
         }
     }
 }
+
+#[cfg(all(test, feature = "serde"))]
+mod tests {
+    use super::*;
+
+    /// BIP32 test vector 1.
+    const SEED: [u8; 16] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f,
+    ];
+    const SK_HEX: &str = "e8f32e723decf4051aefac8e2c93c9c5b214313817cdb01a1494b917c8436b35";
+    const PK_HEX: &str = "0339a36013301597daef41fbe593a02cc513d0b55527ec2df1050e2e8ff49c85c2";
+    const CHAIN_CODE_HEX: &str = "873dff81c02f525623fd1fe5167eac3a55a049de3d314bb42ee227ffed37d508";
+
+    /// Serialized wallets carry the root keys; the key is a hex string in
+    /// human-readable formats and a bare fixed-size tuple (no length prefix)
+    /// otherwise, the public key in compressed form.
+    #[test]
+    fn serde_layout_of_root_keys() {
+        let sk = RootExtendedPrivKey::new_master(&SEED).expect("master key");
+        let pk = sk.to_root_extended_pub_key();
+
+        let sk_json = serde_json::to_string(&sk).expect("serialize private key");
+        assert_eq!(
+            sk_json,
+            format!(
+                "{{\"root_private_key\":\"{}\",\"root_chain_code\":\"{}\"}}",
+                SK_HEX, CHAIN_CODE_HEX
+            )
+        );
+        let pk_json = serde_json::to_string(&pk).expect("serialize public key");
+        assert_eq!(
+            pk_json,
+            format!(
+                "{{\"root_public_key\":\"{}\",\"root_chain_code\":\"{}\"}}",
+                PK_HEX, CHAIN_CODE_HEX
+            )
+        );
+
+        let config = bincode::config::standard();
+        let chain_code = format!("40{}", hex::encode(CHAIN_CODE_HEX));
+        let sk_bin = bincode::serde::encode_to_vec(&sk, config).expect("encode private key");
+        assert_eq!(hex::encode(&sk_bin), format!("{}{}", SK_HEX, chain_code));
+        let pk_bin = bincode::serde::encode_to_vec(&pk, config).expect("encode public key");
+        assert_eq!(hex::encode(&pk_bin), format!("{}{}", PK_HEX, chain_code));
+
+        let sk_back: RootExtendedPrivKey =
+            serde_json::from_str(&sk_json).expect("parse private key");
+        assert_eq!(sk_back.root_private_key, sk.root_private_key);
+        let (sk_back, _): (RootExtendedPrivKey, _) =
+            bincode::serde::decode_from_slice(&sk_bin, config).expect("decode private key");
+        assert_eq!(sk_back.root_private_key, sk.root_private_key);
+        let pk_back: RootExtendedPubKey = serde_json::from_str(&pk_json).expect("parse public key");
+        assert_eq!(pk_back.root_public_key, pk.root_public_key);
+        let (pk_back, _): (RootExtendedPubKey, _) =
+            bincode::serde::decode_from_slice(&pk_bin, config).expect("decode public key");
+        assert_eq!(pk_back.root_public_key, pk.root_public_key);
+    }
+}
