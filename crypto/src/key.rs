@@ -34,8 +34,6 @@ use crate::ecdsa::{
 pub enum Error {
     /// Base58 encoding error
     Base58(base58::Error),
-    /// secp256k1-related error
-    Secp256k1(secp256k1::Error),
     /// ECDSA key error
     Ecdsa(EcdsaError),
     /// Invalid key prefix error
@@ -56,7 +54,6 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Error::Base58(e) => write_err!(f, "key base58 error"; e),
-            Error::Secp256k1(e) => write_err!(f, "key secp256k1 error"; e),
             Error::Ecdsa(e) => write_err!(f, "key ECDSA error"; e),
             Error::InvalidAddressVersion(v) => {
                 write!(f, "address version {} is invalid for this base58 type", v)
@@ -82,7 +79,6 @@ impl std::error::Error for Error {
 
         match self {
             Base58(e) => Some(e),
-            Secp256k1(e) => Some(e),
             Ecdsa(e) => Some(e),
             Hex(e) => Some(e),
             InvalidAddressVersion(_)
@@ -98,13 +94,6 @@ impl std::error::Error for Error {
 impl From<base58::Error> for Error {
     fn from(e: base58::Error) -> Error {
         Error::Base58(e)
-    }
-}
-
-#[doc(hidden)]
-impl From<secp256k1::Error> for Error {
-    fn from(e: secp256k1::Error) -> Error {
-        Error::Secp256k1(e)
     }
 }
 

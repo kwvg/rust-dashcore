@@ -23,8 +23,6 @@ pub enum Error {
     InvalidDerivationPath(String),
     /// Invalid address
     InvalidAddress(String),
-    /// Secp256k1 error
-    Secp256k1(secp256k1::Error),
     /// Base58 decoding error
     Base58,
     /// Invalid network
@@ -66,7 +64,6 @@ impl fmt::Display for Error {
             Error::InvalidMnemonic(s) => write!(f, "Invalid mnemonic: {}", s),
             Error::InvalidDerivationPath(s) => write!(f, "Invalid derivation path: {}", s),
             Error::InvalidAddress(s) => write!(f, "Invalid address: {}", s),
-            Error::Secp256k1(e) => write!(f, "Secp256k1 error: {}", e),
             Error::Base58 => write!(f, "Base58 decoding error"),
             Error::InvalidNetwork => write!(f, "Invalid network"),
             Error::KeyError(s) => write!(f, "Key error: {}", s),
@@ -96,7 +93,6 @@ impl error::Error for Error {
             Error::Bip32(e) => Some(e),
             #[cfg(feature = "eddsa")]
             Error::Slip10(e) => Some(e),
-            Error::Secp256k1(e) => Some(e),
             _ => None,
         }
     }
@@ -105,12 +101,6 @@ impl error::Error for Error {
 impl From<crate::bip32::Error> for Error {
     fn from(e: crate::bip32::Error) -> Self {
         Error::Bip32(e)
-    }
-}
-
-impl From<secp256k1::Error> for Error {
-    fn from(e: secp256k1::Error) -> Self {
-        Error::Secp256k1(e)
     }
 }
 

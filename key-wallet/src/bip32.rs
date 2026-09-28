@@ -1273,8 +1273,6 @@ pub type KeySource = (Fingerprint, DerivationPath);
 pub enum Error {
     /// A pk->pk derivation was attempted on a hardened key
     CannotDeriveFromHardenedKey,
-    /// A secp256k1 error occurred
-    Secp256k1(secp256k1::Error),
     /// An ECDSA key error occurred
     Ecdsa(EcdsaError),
     /// A child number was provided that was out of range
@@ -1305,7 +1303,6 @@ impl fmt::Display for Error {
             Error::CannotDeriveFromHardenedKey => {
                 f.write_str("cannot derive hardened key from public key")
             }
-            Error::Secp256k1(ref e) => fmt::Display::fmt(e, f),
             Error::Ecdsa(ref e) => fmt::Display::fmt(e, f),
             Error::InvalidChildNumber(ref n) => {
                 write!(f, "child number {} is invalid (not within [0, 2^31 - 1])", n)
@@ -1334,16 +1331,9 @@ impl fmt::Display for Error {
 impl error::Error for Error {
     fn cause(&self) -> Option<&dyn error::Error> {
         match *self {
-            Error::Secp256k1(ref e) => Some(e),
             Error::Ecdsa(ref e) => Some(e),
             _ => None,
         }
-    }
-}
-
-impl From<secp256k1::Error> for Error {
-    fn from(e: secp256k1::Error) -> Error {
-        Error::Secp256k1(e)
     }
 }
 
