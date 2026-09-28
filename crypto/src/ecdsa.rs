@@ -272,3 +272,31 @@ impl From<hex::Error> for Error {
         Error::HexEncoding(err)
     }
 }
+
+#[cfg(all(test, feature = "serde"))]
+mod tests {
+    use super::*;
+
+    /// The serde image of the inner signature is its DER encoding: a hex
+    /// string in human-readable formats, a byte string otherwise.
+    #[test]
+    fn serde_layout_is_der() {
+        const DER_HEX: &str = "3045022100d2e84c0a1a8e0d31d1b0f8b3cde37ab19ef8e6bff4f72c5ac6f0a4b8a8d1ec2d\
+                               02204c7b8e3f2a5d6c1b0e9f8a7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39";
+
+        let sig = Signature::from_str(&format!("{}01", DER_HEX)).expect("parse signature");
+
+        let json = serde_json::to_string(&sig).expect("serialize signature");
+        assert_eq!(json, format!("{{\"sig\":\"{}\",\"hash_ty\":\"SIGHASH_ALL\"}}", DER_HEX));
+        assert_eq!(serde_json::from_str::<Signature>(&json).expect("deserialize signature"), sig);
+
+        let config = bincode::config::standard();
+        let bytes = bincode::serde::encode_to_vec(sig, config).expect("encode signature");
+        let expected = Vec::from_hex(&format!("47{}0b{}", DER_HEX, ::hex::encode("SIGHASH_ALL")))
+            .expect("decode hex");
+        assert_eq!(bytes, expected);
+        let (decoded, _): (Signature, _) =
+            bincode::serde::decode_from_slice(&bytes, config).expect("decode signature");
+        assert_eq!(decoded, sig);
+    }
+}
