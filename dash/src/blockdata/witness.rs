@@ -487,7 +487,7 @@ impl From<Vec<&[u8]>> for Witness {
 
 #[cfg(test)]
 mod test {
-    use secp256k1::ecdsa;
+    use crate::crypto::ecdsa::EcdsaSignature;
 
     use super::*;
     use crate::Transaction;
@@ -577,7 +577,7 @@ mod test {
         let sig_bytes = hex!(
             "304402207c800d698f4b0298c5aac830b822f011bb02df41eb114ade9a6702f364d5e39c0220366900d2a60cab903e77ef7dd415d46509b1f78ac78906e3296f495aa1b1b541"
         );
-        let sig = ecdsa::Signature::from_der(&sig_bytes).unwrap();
+        let sig = EcdsaSignature::from_der(&sig_bytes).unwrap();
         let mut witness = Witness::default();
         witness.push_ecdsa_signature(&crate::ecdsa::Signature::sighash_all(sig));
         let expected_witness = vec![hex!(

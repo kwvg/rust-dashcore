@@ -18,7 +18,6 @@ use key_wallet::wallet::managed_wallet_info::asset_lock_builder::{
 use key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy::BranchAndBound;
 use key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
-use secp256k1::{Message, SecretKey};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
@@ -595,7 +594,7 @@ pub unsafe extern "C" fn transaction_sign_input(
     let Ok(privkey_bytes) = <[u8; 32]>::try_from(slice::from_raw_parts(private_key, 32)) else {
         return -1;
     };
-    let privkey = match SecretKey::from_secret_bytes(privkey_bytes) {
+    let privkey = match dashcore::ecdsa::EcdsaSecretKey::from_bytes(&privkey_bytes) {
         Ok(k) => k,
         Err(_) => {
             return -1;
@@ -603,11 +602,10 @@ pub unsafe extern "C" fn transaction_sign_input(
     };
 
     // Sign
-    let message = Message::from_digest(sighash);
-    let sig = privkey.sign_ecdsa(message);
+    let sig = privkey.sign(&sighash);
 
     // Build signature script (simplified P2PKH)
-    let pubkey = dashcore::PublicKey::new(secp256k1::PublicKey::from_secret_key(&privkey));
+    let pubkey = dashcore::PublicKey::new(privkey.public_key());
     tx.inner.input[input_index].script_sig = Builder::new()
         .push_slice(
             dashcore::ecdsa::Signature {
@@ -1016,9 +1014,9 @@ mod tests {
         use dashcore::blockdata::script::Instruction;
 
         let secret = [0x42u8; 32];
-        let pubkey = dashcore::PublicKey::new(secp256k1::PublicKey::from_secret_key(
-            &SecretKey::from_secret_bytes(secret).unwrap(),
-        ));
+        let pubkey = dashcore::PublicKey::new(
+            dashcore::ecdsa::EcdsaSecretKey::from_bytes(&secret).unwrap().public_key(),
+        );
         let script_pubkey = ScriptBuf::new_p2pkh(&pubkey.pubkey_hash());
 
         unsafe {
@@ -1067,7 +1065,7 @@ mod tests {
                 let sig = dashcore::ecdsa::Signature::from_slice(&pushes[0]).unwrap();
                 assert_eq!(sig.hash_ty.to_u32(), sighash_type);
                 assert_eq!(pushes[1], pubkey.to_bytes());
-                sig.sig.verify(Message::from_digest(sighash), &pubkey.inner.into()).unwrap();
+                pubkey.inner.verify(&sighash, sig.sig).unwrap();
             }
 
             transaction_destroy(tx);

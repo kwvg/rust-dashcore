@@ -25,6 +25,7 @@ use crate::dashcore::{ScriptBuf, block, consensus};
 use crate::error::*;
 use crate::json;
 use crate::queryable;
+use dashcore::ecdsa::EcdsaSignature;
 use dashcore::hashes::hex::FromHex;
 use dashcore::sign_message::MessageSignature;
 use dashcore::{
