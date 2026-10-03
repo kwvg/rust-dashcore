@@ -3,10 +3,12 @@ members = ["dash", "crypto", "dash-network", "hashes", "internals", "fuzz", "rpc
 resolver = "2"
 
 [workspace.dependencies]
+ambassador = "0.5.1"
 bincode = { package = "grovedb-bincode", version = "=2.1.0" }
 bincode_derive = { package = "grovedb-bincode-derive", version = "=2.1.0" }
 dash-pkc = { git = "https://github.com/dashpay/base-sdk", rev = "2d103909378386216bfdc5c3d153e385b53062f1", default-features = false }
 dash-types = { git = "https://github.com/dashpay/base-sdk", rev = "2d103909378386216bfdc5c3d153e385b53062f1", default-features = false }
+delegate = "0.13.5"
 
 [workspace.package]
 version = "0.45.0"

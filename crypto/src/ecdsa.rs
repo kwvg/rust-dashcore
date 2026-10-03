@@ -12,10 +12,13 @@
 use core::str::FromStr;
 use core::{fmt, iter};
 
+use ambassador::{delegatable_trait_remote, Delegate};
 use dash_pkc::ecdsa::{
-    Compression, EcdsaPublicKey as PkcPublicKey, EcdsaRecSignature as PkcRecSignature,
-    EcdsaSecretKey as PkcSecretKey, EcdsaSignature as PkcSignature,
+    Compression, EcdsaDerSig as PkcDerSig, EcdsaPublicKey as PkcPublicKey,
+    EcdsaRecSignature as PkcRecSignature, EcdsaSecretKey as PkcSecretKey,
+    EcdsaSignature as PkcSignature,
 };
+use delegate::delegate;
 use hashes::hex::{self, FromHex};
 use internals::hex::display::DisplayHex;
 use internals::write_err;
@@ -326,37 +329,34 @@ pub enum EcdsaError {
 pub struct EcdsaPublicKey(PkcPublicKey);
 
 impl EcdsaPublicKey {
-    /// Parses a compressed (33-byte) or uncompressed (65-byte) SEC1 encoding.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidPublicKey` when the bytes are not a valid encoding of a
-    /// curve point.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, EcdsaError> {
-        if bytes.len() != ECDSA_PK_LEN && bytes.len() != ECDSA_PK_UNCOMPRESSED_LEN {
-            return Err(EcdsaError::InvalidPublicKey);
+    delegate! {
+        to PkcPublicKey {
+            /// Parses a compressed (33-byte) or uncompressed (65-byte) SEC1
+            /// encoding.
+            ///
+            /// # Errors
+            ///
+            /// Returns `InvalidPublicKey` when the bytes are not a valid
+            /// encoding of a curve point.
+            #[expr($.map(Self).map_err(|_| EcdsaError::InvalidPublicKey))]
+            pub fn from_bytes(bytes: &[u8]) -> Result<Self, EcdsaError>;
         }
-        PkcPublicKey::from_bytes(bytes).map(Self).map_err(|_| EcdsaError::InvalidPublicKey)
-    }
+        to self.0 {
+            /// The compressed SEC1 encoding.
+            pub fn to_compressed(&self) -> [u8; ECDSA_PK_LEN];
 
-    /// The compressed SEC1 encoding.
-    pub fn to_compressed(&self) -> [u8; ECDSA_PK_LEN] {
-        self.0.to_compressed()
-    }
+            /// The uncompressed SEC1 encoding.
+            pub fn to_uncompressed(&self) -> [u8; ECDSA_PK_UNCOMPRESSED_LEN];
 
-    /// The uncompressed SEC1 encoding.
-    pub fn to_uncompressed(&self) -> [u8; ECDSA_PK_UNCOMPRESSED_LEN] {
-        self.0.to_uncompressed()
-    }
-
-    /// Adds `tweak * G` to the point.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidTweak` when the tweak is not a valid scalar or the sum
-    /// is the point at infinity.
-    pub fn add_tweak(&self, tweak: &[u8; ECDSA_SK_LEN]) -> Result<Self, EcdsaError> {
-        self.0.add_tweak(tweak).map(Self).map_err(|_| EcdsaError::InvalidTweak)
+            /// Adds `tweak * G` to the point.
+            ///
+            /// # Errors
+            ///
+            /// Returns `InvalidTweak` when the tweak is not a valid scalar or
+            /// the sum is the point at infinity.
+            #[expr($.map(Self).map_err(|_| EcdsaError::InvalidTweak))]
+            pub fn add_tweak(&self, tweak: &[u8; ECDSA_SK_LEN]) -> Result<Self, EcdsaError>;
+        }
     }
 
     /// Checks `sig` over the 32-byte prehashed message.
@@ -490,73 +490,72 @@ impl<'de> serde::Deserialize<'de> for EcdsaPublicKey {
     }
 }
 
+#[delegatable_trait_remote]
+trait Zeroize {
+    fn zeroize(&mut self);
+}
+
 /// A secp256k1 secret key (a scalar, without a serialization form).
 ///
 /// Not `Copy`: the scalar is erased when the key is dropped, and an implicit
-/// copy would outlive that. The backend's type stays behind this one; convert
+/// copy would outlive that. The backend key erases itself on drop; `Zeroize`
+/// is for erasing early. The backend's type stays behind this one; convert
 /// with [`From`] where a backend-only API (Schnorr) still needs it.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Delegate)]
+#[delegate(Zeroize)]
 pub struct EcdsaSecretKey(PkcSecretKey);
 
 impl EcdsaSecretKey {
-    /// Wraps a big-endian scalar.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidSecretKey` when the scalar is zero or not below the
-    /// curve order.
-    pub fn from_bytes(bytes: &[u8; ECDSA_SK_LEN]) -> Result<Self, EcdsaError> {
-        PkcSecretKey::from_bytes(bytes, Compression::Compressed)
-            .map(Self)
-            .map_err(|_| EcdsaError::InvalidSecretKey)
-    }
+    delegate! {
+        to PkcSecretKey {
+            /// Wraps a big-endian scalar.
+            ///
+            /// # Errors
+            ///
+            /// Returns `InvalidSecretKey` when the scalar is zero or not below
+            /// the curve order.
+            #[expr($.map(Self).map_err(|_| EcdsaError::InvalidSecretKey))]
+            pub fn from_bytes(
+                bytes: &[u8; ECDSA_SK_LEN],
+                [Compression::Compressed],
+            ) -> Result<Self, EcdsaError>;
+        }
+        to self.0 {
+            /// Copies out the big-endian scalar.
+            pub fn to_bytes(&self) -> Zeroizing<[u8; ECDSA_SK_LEN]>;
 
-    /// Copies out the big-endian scalar.
-    pub fn to_bytes(&self) -> Zeroizing<[u8; ECDSA_SK_LEN]> {
-        self.0.to_bytes()
-    }
+            /// Derives the corresponding public key.
+            #[expr(EcdsaPublicKey($))]
+            pub fn public_key(&self) -> EcdsaPublicKey;
 
-    /// Derives the corresponding public key.
-    pub fn public_key(&self) -> EcdsaPublicKey {
-        EcdsaPublicKey(self.0.public_key())
-    }
+            /// Adds `tweak` to the scalar.
+            ///
+            /// # Errors
+            ///
+            /// Returns `InvalidTweak` when the tweak is not a valid scalar or
+            /// the sum is zero.
+            #[expr($.map(Self).map_err(|_| EcdsaError::InvalidTweak))]
+            pub fn add_tweak(&self, tweak: &[u8; ECDSA_SK_LEN]) -> Result<Self, EcdsaError>;
 
-    /// Adds `tweak` to the scalar.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidTweak` when the tweak is not a valid scalar or the sum
-    /// is zero.
-    pub fn add_tweak(&self, tweak: &[u8; ECDSA_SK_LEN]) -> Result<Self, EcdsaError> {
-        self.0.add_tweak(tweak).map(Self).map_err(|_| EcdsaError::InvalidTweak)
-    }
+            /// Multiplies the scalar by `tweak`.
+            ///
+            /// # Errors
+            ///
+            /// Returns `InvalidTweak` when the tweak is zero or not a valid
+            /// scalar.
+            #[expr($.map(Self).map_err(|_| EcdsaError::InvalidTweak))]
+            pub fn mul_tweak(&self, tweak: &[u8; ECDSA_SK_LEN]) -> Result<Self, EcdsaError>;
 
-    /// Multiplies the scalar by `tweak`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidTweak` when the tweak is zero or not a valid scalar.
-    pub fn mul_tweak(&self, tweak: &[u8; ECDSA_SK_LEN]) -> Result<Self, EcdsaError> {
-        self.0.mul_tweak(tweak).map(Self).map_err(|_| EcdsaError::InvalidTweak)
-    }
+            /// Signs a 32-byte prehashed message (RFC 6979, low-S normalized,
+            /// low-R ground).
+            #[expr(EcdsaSignature($))]
+            pub fn sign(&self, msg_hash: &[u8; 32]) -> EcdsaSignature;
 
-    /// Signs a 32-byte prehashed message (RFC 6979, low-S normalized, low-R
-    /// ground).
-    pub fn sign(&self, msg_hash: &[u8; 32]) -> EcdsaSignature {
-        EcdsaSignature(self.0.sign(msg_hash))
-    }
-
-    /// Signs a 32-byte prehashed message recoverably (RFC 6979, low-S
-    /// normalized, not ground).
-    pub fn sign_recoverable(&self, msg_hash: &[u8; 32]) -> EcdsaRecSignature {
-        EcdsaRecSignature(self.0.sign_recoverable(msg_hash))
-    }
-}
-
-/// The backend key erases itself on drop; this is for erasing early.
-impl Zeroize for EcdsaSecretKey {
-    fn zeroize(&mut self) {
-        self.0.zeroize();
+            /// Signs a 32-byte prehashed message recoverably (RFC 6979, low-S
+            /// normalized, not ground).
+            #[expr(EcdsaRecSignature($))]
+            pub fn sign_recoverable(&self, msg_hash: &[u8; 32]) -> EcdsaRecSignature;
+        }
     }
 }
 
@@ -638,38 +637,31 @@ impl<'de> serde::Deserialize<'de> for EcdsaSecretKey {
 pub struct EcdsaSignature(PkcSignature);
 
 impl EcdsaSignature {
-    /// Parses the compact (`r || s`) encoding.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidSignature` when either scalar is out of range.
-    pub fn from_bytes(bytes: &[u8; ECDSA_SIG_LEN]) -> Result<Self, EcdsaError> {
-        PkcSignature::from_bytes(bytes).map(Self).map_err(|_| EcdsaError::InvalidSignature)
-    }
+    delegate! {
+        #[expr($.map(Self).map_err(|_| EcdsaError::InvalidSignature))]
+        to PkcSignature {
+            /// Parses the compact (`r || s`) encoding.
+            ///
+            /// # Errors
+            ///
+            /// Returns `InvalidSignature` when either scalar is out of range.
+            pub fn from_bytes(bytes: &[u8; ECDSA_SIG_LEN]) -> Result<Self, EcdsaError>;
 
-    /// Parses a DER encoding.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidSignature` when the DER framing is malformed or either
-    /// scalar is out of range.
-    pub fn from_der(bytes: &[u8]) -> Result<Self, EcdsaError> {
-        PkcSignature::from_der(bytes).map(Self).map_err(|_| EcdsaError::InvalidSignature)
-    }
+            /// Parses a DER encoding.
+            ///
+            /// # Errors
+            ///
+            /// Returns `InvalidSignature` when the DER framing is malformed or
+            /// either scalar is out of range.
+            pub fn from_der(bytes: &[u8]) -> Result<Self, EcdsaError>;
+        }
+        to self.0 {
+            /// The compact (`r || s`) encoding.
+            pub fn to_bytes(&self) -> [u8; ECDSA_SIG_LEN];
 
-    /// The compact (`r || s`) encoding.
-    pub fn to_bytes(&self) -> [u8; ECDSA_SIG_LEN] {
-        self.0.to_bytes()
-    }
-
-    /// The DER encoding.
-    pub fn to_der(&self) -> EcdsaDerSig {
-        let der = self.0.to_der();
-        let mut data = [0u8; ECDSA_DER_MAX_LEN];
-        data[..der.len()].copy_from_slice(der.as_bytes());
-        EcdsaDerSig {
-            data,
-            len: der.len(),
+            /// The DER encoding.
+            #[expr(EcdsaDerSig($))]
+            pub fn to_der(&self) -> EcdsaDerSig;
         }
     }
 }
@@ -765,30 +757,32 @@ impl<'de> serde::Deserialize<'de> for EcdsaSignature {
 pub struct EcdsaRecSignature(PkcRecSignature);
 
 impl EcdsaRecSignature {
-    /// Pairs a signature with its recovery id.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidRecoveryId` when `recovery_id` is not in `0..=3`.
-    pub fn from_parts(sig: EcdsaSignature, recovery_id: u8) -> Result<Self, EcdsaError> {
-        PkcRecSignature::from_parts(sig.0, recovery_id, Compression::Compressed)
-            .map(Self)
-            .map_err(|_| EcdsaError::InvalidRecoveryId)
-    }
+    delegate! {
+        to PkcRecSignature {
+            /// Pairs a signature with its recovery id.
+            ///
+            /// # Errors
+            ///
+            /// Returns `InvalidRecoveryId` when `recovery_id` is not in
+            /// `0..=3`.
+            #[expr($.map(Self).map_err(|_| EcdsaError::InvalidRecoveryId))]
+            pub fn from_parts(
+                #[newtype] sig: EcdsaSignature,
+                recovery_id: u8,
+                [Compression::Compressed],
+            ) -> Result<Self, EcdsaError>;
+        }
+        to self.0 {
+            /// The recovery id, in `0..=3`.
+            pub fn recovery_id(&self) -> u8;
 
-    /// The recovery id, in `0..=3`.
-    pub fn recovery_id(&self) -> u8 {
-        self.0.recovery_id()
-    }
+            /// The signature without its recovery id.
+            #[expr(EcdsaSignature(*$))]
+            pub fn signature(&self) -> EcdsaSignature;
 
-    /// The signature without its recovery id.
-    pub fn signature(&self) -> EcdsaSignature {
-        EcdsaSignature(*self.0.signature())
-    }
-
-    /// The compact (`r || s`) encoding of the signature.
-    pub fn to_compact(&self) -> [u8; ECDSA_SIG_LEN] {
-        self.0.to_compact()
+            /// The compact (`r || s`) encoding of the signature.
+            pub fn to_compact(&self) -> [u8; ECDSA_SIG_LEN];
+        }
     }
 }
 
@@ -810,50 +804,28 @@ impl From<EcdsaRecSignature> for secp256k1::ecdsa::RecoverableSignature {
     }
 }
 
-/// Longest DER encoding of an ECDSA signature.
-const ECDSA_DER_MAX_LEN: usize = 72;
-
 /// A DER-encoded ECDSA signature, held in-line.
-#[derive(Clone, Copy)]
-pub struct EcdsaDerSig {
-    data: [u8; ECDSA_DER_MAX_LEN],
-    len: usize,
-}
+#[derive(Clone, Eq, Hash, PartialEq)]
+pub struct EcdsaDerSig(PkcDerSig);
 
 impl EcdsaDerSig {
-    /// The DER bytes.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.data[..self.len]
-    }
+    delegate! {
+        to self.0 {
+            /// The DER bytes.
+            pub fn as_bytes(&self) -> &[u8];
 
-    /// The DER length.
-    pub fn len(&self) -> usize {
-        self.len
-    }
+            /// The DER length.
+            pub fn len(&self) -> usize;
 
-    /// Whether the encoding is empty (never, for a valid signature).
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+            /// Whether the encoding is empty (never, for a valid signature).
+            pub fn is_empty(&self) -> bool;
+        }
     }
 }
 
 impl fmt::Debug for EcdsaDerSig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "EcdsaDerSig({:x})", self.as_bytes().as_hex())
-    }
-}
-
-impl Eq for EcdsaDerSig {}
-
-impl PartialEq for EcdsaDerSig {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_bytes() == other.as_bytes()
-    }
-}
-
-impl core::hash::Hash for EcdsaDerSig {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.as_bytes().hash(state)
     }
 }
 

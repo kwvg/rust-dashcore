@@ -18,6 +18,7 @@ eddsa = ["dash-pkc/eddsa"]
 serde = ["dep:serde", "dash-types/serde", "dashcore_hashes/serde", "dash-network/serde", "secp256k1/serde"]
 
 [dependencies]
+ambassador = { workspace = true }
 base58ck = { version = "0.1.0" }
 bincode = { workspace = true, optional = true }
 bincode_derive = { workspace = true, optional = true }
@@ -25,6 +26,7 @@ dash-network = { path = "../dash-network" }
 dash-pkc = { workspace = true, features = ["ecdsa", "std"] }
 dash-types = { workspace = true, features = ["codec"] }
 dashcore_hashes = { path = "../hashes" }
+delegate = { workspace = true }
 hex = { version = "0.4" }
 internals = { path = "../internals", package = "dashcore-private" }
 secp256k1 = { version = "0.33.1", features = ["recovery"] }
