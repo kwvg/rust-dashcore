@@ -1293,6 +1293,8 @@ pub enum Error {
     UnknownVersion([u8; 4]),
     /// Encoded extended key data has wrong length
     WrongExtendedKeyLength(usize),
+    /// A master key seed must be 16 to 64 bytes
+    InvalidSeedLength(usize),
     /// Base58 encoding error
     Base58(base58::Error),
     /// Hexadecimal decoding error
@@ -1320,6 +1322,9 @@ impl fmt::Display for Error {
             }
             Error::WrongExtendedKeyLength(ref len) => {
                 write!(f, "encoded extended key data has wrong length {}", len)
+            }
+            Error::InvalidSeedLength(len) => {
+                write!(f, "seed must be 16 to 64 bytes, got {}", len)
             }
             Error::Base58(ref err) => write!(f, "base58 encoding error: {}", err),
             Error::Hex(ref e) => write!(f, "Hexadecimal decoding error: {}", e),
@@ -1364,6 +1369,11 @@ fn hmac_secret_half(hmac: &Hmac<sha512::Hash>) -> [u8; secp256k1::constants::SEC
 impl ExtendedPrivKey {
     /// Construct a new master key from a seed value
     pub fn new_master(network: Network, seed: &[u8]) -> Result<ExtendedPrivKey, Error> {
+        // BIP32 seeds are 128 to 512 bits.
+        if !(16..=64).contains(&seed.len()) {
+            return Err(Error::InvalidSeedLength(seed.len()));
+        }
+
         let mut hmac_engine: HmacEngine<sha512::Hash> = HmacEngine::new(b"Bitcoin seed");
         hmac_engine.input(seed);
         let hmac_result: Hmac<sha512::Hash> = Hmac::from_engine(hmac_engine);
@@ -1948,6 +1958,14 @@ mod tests {
     use super::ChildNumber::{Hardened, Normal};
     use super::*;
     use dashcore::Network::{self, Mainnet};
+
+    #[test_case::test_case(15 => Err(Error::InvalidSeedLength(15)) ; "too short")]
+    #[test_case::test_case(16 => Ok(()) ; "shortest")]
+    #[test_case::test_case(64 => Ok(()) ; "longest")]
+    #[test_case::test_case(65 => Err(Error::InvalidSeedLength(65)) ; "too long")]
+    fn master_seed_length(len: usize) -> Result<(), Error> {
+        ExtendedPrivKey::new_master(Mainnet, &vec![0x2a; len]).map(|_| ())
+    }
 
     #[test]
     fn test_parse_derivation_path() {
