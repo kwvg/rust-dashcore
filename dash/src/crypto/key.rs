@@ -188,6 +188,15 @@ mod tests {
         assert!(PublicKey::read_from(io::Cursor::new(&[4; 64][..])).is_err());
     }
 
+    /// A prefix no SEC1 key starts with fails without reading the key body.
+    #[test_case::test_matrix([0x00, 0x01, 0x05, 0x06, 0x07])]
+    fn pubkey_read_from_rejects_prefix_before_body(prefix: u8) {
+        let data = [prefix; 65];
+        let mut reader = &data[..];
+        assert!(PublicKey::read_from(&mut reader).is_err());
+        assert_eq!(reader.len(), 64, "only the prefix byte is read");
+    }
+
     #[test]
     #[cfg(feature = "rand-std")]
     fn public_key_constructors() {

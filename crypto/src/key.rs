@@ -158,10 +158,16 @@ impl PublicKey {
         let mut bytes = [0; 65];
 
         reader.read_exact(&mut bytes[0..1])?;
-        let bytes = if bytes[0] < 4 {
-            &mut bytes[..33]
-        } else {
-            &mut bytes[..65]
+        // The prefixes `from_slice` accepts, rejected before reading on.
+        let bytes = match bytes[0] {
+            0x02 | 0x03 => &mut bytes[..33],
+            0x04 => &mut bytes[..65],
+            prefix => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    Error::InvalidKeyPrefix(prefix),
+                ))
+            }
         };
 
         reader.read_exact(&mut bytes[1..])?;
