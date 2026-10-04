@@ -428,11 +428,7 @@ impl Wallet {
 
         // Convert to WIF format
         use dashcore::PrivateKey as DashPrivateKey;
-        let dash_key = DashPrivateKey {
-            compressed: true,
-            network: self.network,
-            inner: private_key,
-        };
+        let dash_key = DashPrivateKey::new(private_key, self.network);
         Ok(dash_key.to_wif())
     }
 
