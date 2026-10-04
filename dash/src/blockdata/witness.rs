@@ -8,17 +8,14 @@
 use core::convert::TryInto;
 use core::ops::Index;
 
-#[cfg(feature = "bincode")]
-use bincode::{Decode, Encode};
-use secp256k1::ecdsa;
-
 use crate::consensus::encode::{Error, MAX_VEC_SIZE};
 use crate::consensus::{Decodable, Encodable, WriteExt};
 use crate::io::{self, Read, Write};
 use crate::prelude::*;
-use crate::sighash::EcdsaSighashType;
 use crate::taproot::TAPROOT_ANNEX_PREFIX;
 use crate::{Script, VarInt};
+#[cfg(feature = "bincode")]
+use bincode::{Decode, Encode};
 
 /// The Witness is the data used to unlock dash since the [segwit upgrade].
 ///
@@ -275,18 +272,10 @@ impl Witness {
         self.content[end_varint..end_varint + new_element.len()].copy_from_slice(new_element);
     }
 
-    /// Pushes a DER-encoded ECDSA signature with a signature hash type as a new element on the
-    /// witness, requires an allocation.
-    pub fn push_bitcoin_signature(
-        &mut self,
-        signature: &ecdsa::SerializedSignature,
-        hash_type: EcdsaSighashType,
-    ) {
-        // Note that a maximal length ECDSA signature is 72 bytes, plus the sighash type makes 73
-        let mut sig = [0; 73];
-        sig[..signature.len()].copy_from_slice(signature);
-        sig[signature.len()] = hash_type as u8;
-        self.push(&sig[..signature.len() + 1]);
+    /// Pushes a DER-encoded ECDSA signature with its signature hash type as a
+    /// new element on the witness, requires an allocation.
+    pub fn push_ecdsa_signature(&mut self, signature: &crate::ecdsa::Signature) {
+        self.push(signature.serialize())
     }
 
     fn element_at(&self, index: usize) -> Option<&[u8]> {
@@ -590,7 +579,7 @@ mod test {
         );
         let sig = ecdsa::Signature::from_der(&sig_bytes).unwrap();
         let mut witness = Witness::default();
-        witness.push_bitcoin_signature(&sig.serialize_der(), EcdsaSighashType::All);
+        witness.push_ecdsa_signature(&crate::ecdsa::Signature::sighash_all(sig));
         let expected_witness = vec![hex!(
             "304402207c800d698f4b0298c5aac830b822f011bb02df41eb114ade9a6702f364d5e39c0220366900d2a60cab903e77ef7dd415d46509b1f78ac78906e3296f495aa1b1b54101"
         )];
