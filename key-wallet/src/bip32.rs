@@ -1432,10 +1432,12 @@ impl ExtendedPrivKey {
             }
         }
         let hmac_result: Hmac<sha512::Hash> = Hmac::from_engine(hmac_engine);
-        let sk = EcdsaSecretKey::from_bytes(&hmac_secret_half(&hmac_result))
+        // IL added to the parent scalar; `add_tweak` rejects IL >= n and a zero
+        // sum, the two cases BIP32 declares invalid.
+        let tweaked = self
+            .private_key
+            .add_tweak(&hmac_secret_half(&hmac_result))
             .expect("statistically impossible to hit");
-        let tweaked =
-            sk.add_tweak(&self.private_key.to_bytes()).expect("statistically impossible to hit");
 
         Ok(ExtendedPrivKey {
             network: self.network,
