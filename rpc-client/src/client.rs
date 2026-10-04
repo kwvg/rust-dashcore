@@ -26,7 +26,7 @@ use crate::error::*;
 use crate::json;
 use crate::queryable;
 use dashcore::hashes::hex::FromHex;
-use dashcore::secp256k1::ecdsa::Signature;
+use dashcore::sign_message::MessageSignature;
 use dashcore::{
     Address, Amount, Block, OutPoint, PrivateKey, ProTxHash, PublicKey, QuorumHash, Transaction,
 };
@@ -783,10 +783,12 @@ pub trait RpcApi: Sized {
         self.call("stop", &[])
     }
 
+    /// `signature` goes over the wire as base64 of the 65-byte recoverable
+    /// form, the encoding `verifymessage` expects.
     fn verify_message(
         &self,
         address: &Address,
-        signature: &Signature,
+        signature: &MessageSignature,
         message: &str,
     ) -> Result<bool> {
         let args = [address.to_string().into(), signature.to_string().into(), into_json(message)?];

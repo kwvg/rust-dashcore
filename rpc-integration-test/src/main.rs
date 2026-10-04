@@ -233,7 +233,6 @@ fn main() {
     test_evo_node_endpoints(&evo_client, &wallet_client);
 
     // //TODO import_multi(
-    // //TODO verify_message(
     // //TODO wait_for_new_block(&self, timeout: u64) -> Result<json::BlockRef> {
     // //TODO wait_for_block(
     // //TODO get_descriptor_info(&self, desc: &str) -> Result<json::GetDescriptorInfoResult> {
@@ -251,6 +250,7 @@ fn test_wallet_node_endpoints(wallet_client: &Client) {
     test_get_blockchain_info(wallet_client);
     test_get_new_address(wallet_client);
     test_dump_private_key(wallet_client);
+    test_verify_message(wallet_client);
     // TODO: fix - looks like there's a consensus delay when things are running on network of three nodes.
     // test_get_balance_generate_to_address(wallet_client);
     test_get_balances_generate_to_address(wallet_client);
@@ -403,6 +403,23 @@ fn test_dump_private_key(cl: &Client) {
     let addr = cl.get_new_address(None).unwrap().require_network(*NET).unwrap();
     let sk = cl.dump_private_key(&addr).unwrap();
     assert_eq!(addr.to_string(), Address::p2pkh(&sk.public_key(), *NET).to_string());
+}
+
+fn test_verify_message(cl: &Client) {
+    use dashcore_rpc::dashcore::secp256k1::{Message, ecdsa::RecoverableSignature};
+    use dashcore_rpc::dashcore::sign_message::{MessageSignature, signed_msg_hash};
+
+    let addr = cl.get_new_address(None).unwrap().require_network(*NET).unwrap();
+    let sk = cl.dump_private_key(&addr).unwrap();
+    let message = "rust-dashcore verify_message test";
+    let msg = Message::from_digest(signed_msg_hash(message).to_byte_array());
+    let signature = MessageSignature::new(
+        RecoverableSignature::sign_ecdsa_recoverable(msg, &sk.inner),
+        sk.compressed,
+    );
+
+    assert!(cl.verify_message(&addr, &signature, message).unwrap());
+    assert!(!cl.verify_message(&addr, &signature, "a different message").unwrap());
 }
 
 #[allow(dead_code)]
