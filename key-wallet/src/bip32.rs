@@ -27,14 +27,14 @@ use core::ops::Index;
 use core::str::FromStr;
 use std::error;
 
+use dashcore::secp256k1::{self, XOnlyPublicKey};
 use dashcore_hashes::{hash160, sha512, Hash, HashEngine, Hmac, HmacEngine};
-use secp256k1::{self, XOnlyPublicKey};
 #[cfg(feature = "serde")]
 use serde;
 
 #[cfg(feature = "bincode")]
 use bincode_derive::{Decode, Encode};
-use dashcore::ecdsa::{EcdsaError, EcdsaPublicKey, EcdsaSecretKey};
+use dashcore::ecdsa::{EcdsaError, EcdsaPublicKey, EcdsaSecretKey, ECDSA_SK_LEN};
 use dashcore::Network;
 use zeroize::Zeroize;
 
@@ -42,7 +42,7 @@ use zeroize::Zeroize;
 type XpubIdentifier = hash160::Hash;
 
 pub use crate::dip9::{ApplicationKeyPurpose, KeyDerivationType};
-pub use secp256k1::Keypair;
+pub use dashcore::secp256k1::Keypair;
 
 /// A chain code
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1350,11 +1350,8 @@ impl From<base58::Error> for Error {
 }
 
 /// The secret-key half of a BIP32 HMAC-SHA512 output.
-fn hmac_secret_half(hmac: &Hmac<sha512::Hash>) -> [u8; secp256k1::constants::SECRET_KEY_SIZE] {
-    *hmac
-        .as_byte_array()
-        .first_chunk::<{ secp256k1::constants::SECRET_KEY_SIZE }>()
-        .expect("sha512 HMAC output is 64 bytes")
+fn hmac_secret_half(hmac: &Hmac<sha512::Hash>) -> [u8; ECDSA_SK_LEN] {
+    *hmac.as_byte_array().first_chunk::<ECDSA_SK_LEN>().expect("sha512 HMAC output is 64 bytes")
 }
 
 impl ExtendedPrivKey {
