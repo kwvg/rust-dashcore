@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::base58;
 use crate::ecdsa::{
-    EcdsaError, EcdsaPublicKey, EcdsaSecretKey, ECDSA_PK_LEN, ECDSA_PK_UNCOMPRESSED_LEN,
-    ECDSA_SK_LEN,
+    Compression, EcdsaError, EcdsaPublicKey, EcdsaSecretKey, ECDSA_PK_LEN,
+    ECDSA_PK_UNCOMPRESSED_LEN, ECDSA_SK_LEN,
 };
 
 /// A key-related error.
@@ -341,11 +341,10 @@ impl FromStr for PublicKey {
 /// A Dash ECDSA private key
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PrivateKey {
-    /// Whether this private key should be serialized as compressed
-    pub compressed: bool,
     /// The network on which this key should be used
     pub network: Network,
-    /// The actual ECDSA key
+    /// The actual ECDSA key, which also records whether its public key is
+    /// compressed
     pub inner: EcdsaSecretKey,
 }
 
@@ -354,9 +353,8 @@ impl PrivateKey {
     /// and the specified network
     pub fn new(key: impl Into<EcdsaSecretKey>, network: Network) -> PrivateKey {
         PrivateKey {
-            compressed: true,
             network,
-            inner: key.into(),
+            inner: key.into().with_compression(Compression::Compressed),
         }
     }
 
@@ -364,16 +362,20 @@ impl PrivateKey {
     /// private key and the specified network
     pub fn new_uncompressed(key: impl Into<EcdsaSecretKey>, network: Network) -> PrivateKey {
         PrivateKey {
-            compressed: false,
             network,
-            inner: key.into(),
+            inner: key.into().with_compression(Compression::Uncompressed),
         }
+    }
+
+    /// Whether the public key serializes compressed.
+    pub fn is_compressed(&self) -> bool {
+        self.inner.is_compressed()
     }
 
     /// Creates a public key from this private key
     pub fn public_key(&self) -> PublicKey {
         PublicKey {
-            compressed: self.compressed,
+            compressed: self.is_compressed(),
             inner: self.inner.public_key(),
         }
     }
@@ -397,19 +399,11 @@ impl PrivateKey {
 
     /// Format the private key to WIF format.
     pub fn fmt_wif(&self, fmt: &mut dyn Write) -> fmt::Result {
-        let mut ret = [0; 34];
-        ret[0] = match self.network {
+        let version = match self.network {
             Network::Mainnet => 204,
             Network::Testnet | Network::Devnet | Network::Regtest => 239,
         };
-        ret[1..33].copy_from_slice(&*self.inner.to_bytes());
-        let privkey = if self.compressed {
-            ret[33] = 1;
-            base58::encode_check(&ret[..])
-        } else {
-            base58::encode_check(&ret[..33])
-        };
-        fmt.write_str(&privkey)
+        fmt.write_str(&self.inner.to_wif(version))
     }
 
     /// Get WIF encoding of this private key.
@@ -422,32 +416,16 @@ impl PrivateKey {
 
     /// Parse WIF encoded private key.
     pub fn from_wif(wif: &str) -> Result<PrivateKey, Error> {
-        let data = base58::decode_check(wif)?;
-
-        let compressed = match data.len() {
-            33 => false,
-            34 => true,
-            _ => {
-                return Err(Error::InvalidBase58PayloadLength(data.len()));
-            }
-        };
-
-        let network = match data[0] {
+        let (inner, version) = EcdsaSecretKey::from_wif(wif)?;
+        let network = match version {
             204 => Network::Mainnet,
             239 => Network::Testnet,
-            x => {
-                return Err(Error::InvalidAddressVersion(x));
-            }
+            x => return Err(Error::InvalidAddressVersion(x)),
         };
 
-        let secret = data[1..]
-            .first_chunk::<ECDSA_SK_LEN>()
-            .ok_or(Error::InvalidBase58PayloadLength(data.len()))?;
-
         Ok(PrivateKey {
-            compressed,
             network,
-            inner: EcdsaSecretKey::from_bytes(secret)?,
+            inner,
         })
     }
 }

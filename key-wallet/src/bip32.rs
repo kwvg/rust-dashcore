@@ -2723,7 +2723,7 @@ mod tests {
 
         // Test to_priv() method
         let priv_key = ext_priv.to_priv();
-        assert!(priv_key.compressed);
+        assert!(priv_key.is_compressed());
         assert_eq!(priv_key.network, dashcore::Network::Testnet);
         assert_eq!(priv_key.inner, ext_priv.private_key);
 

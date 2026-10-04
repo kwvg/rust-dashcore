@@ -23,7 +23,7 @@ base58ck = { version = "0.1.0" }
 bincode = { workspace = true, optional = true }
 bincode_derive = { workspace = true, optional = true }
 dash-network = { path = "../dash-network" }
-dash-pkc = { workspace = true, features = ["ecdsa", "std"] }
+dash-pkc = { workspace = true, features = ["codec", "ecdsa", "std"] }
 dash-types = { workspace = true, features = ["codec"] }
 dashcore_hashes = { path = "../hashes" }
 delegate = { workspace = true }

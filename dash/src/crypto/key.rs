@@ -25,7 +25,7 @@ mod tests {
         let sk =
             PrivateKey::from_wif("cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy").unwrap();
         assert_eq!(sk.network, Testnet);
-        assert!(sk.compressed);
+        assert!(sk.is_compressed());
         assert_eq!(&sk.to_wif(), "cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy");
 
         let pk = Address::p2pkh(&sk.public_key(), sk.network);
@@ -41,7 +41,7 @@ mod tests {
         let sk =
             PrivateKey::from_wif("7sU7MdjMtaLYxC4ec2z1zkhzZVBwRzZUcU6gJRzJ94s6UzAwA8c").unwrap();
         assert_eq!(sk.network, Mainnet);
-        assert!(!sk.compressed);
+        assert!(!sk.is_compressed());
         assert_eq!(&sk.to_wif(), "7sU7MdjMtaLYxC4ec2z1zkhzZVBwRzZUcU6gJRzJ94s6UzAwA8c");
 
         let mut pk = sk.public_key();
@@ -186,6 +186,29 @@ mod tests {
         assert!(PublicKey::read_from(io::Cursor::new(&[2; 32][..])).is_err());
         assert!(PublicKey::read_from(io::Cursor::new(&[0; 65][..])).is_err());
         assert!(PublicKey::read_from(io::Cursor::new(&[4; 64][..])).is_err());
+    }
+
+    /// Core's `DecodeSecret` takes a 34-byte payload only when it ends in
+    /// the 0x01 compression flag.
+    #[test_case::test_matrix([0x00, 0x02, 0xff])]
+    fn wif_compression_flag_must_be_one(flag: u8) {
+        let mut data =
+            crate::base58::decode_check("cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy")
+                .unwrap();
+        data[33] = flag;
+        assert_eq!(
+            PrivateKey::from_wif(&crate::base58::encode_check(&data)),
+            Err(crate::crypto::key::Error::Ecdsa(crate::ecdsa::EcdsaError::InvalidWif))
+        );
+    }
+
+    /// The key a WIF decodes to carries its compression into what it signs.
+    #[test_case::test_case("cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy" => true ; "compressed")]
+    #[test_case::test_case("7sU7MdjMtaLYxC4ec2z1zkhzZVBwRzZUcU6gJRzJ94s6UzAwA8c" => false ; "uncompressed")]
+    fn wif_compression_reaches_recoverable_signatures(wif: &str) -> bool {
+        let sk = PrivateKey::from_wif(wif).unwrap();
+        assert_eq!(sk.is_compressed(), sk.public_key().compressed);
+        sk.inner.sign_recoverable(&[7; 32]).is_compressed()
     }
 
     /// A prefix no SEC1 key starts with fails without reading the key body.

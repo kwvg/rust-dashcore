@@ -18,7 +18,7 @@ use ambassador::{delegatable_trait_remote, Delegate};
 pub use dash_pkc::ecdsa::{Compression, EcdsaDerSig, EcdsaRecSigBytes, EcdsaRecSignature};
 use dash_pkc::ecdsa::{
     EcdsaError as PkcError, EcdsaPublicKey as PkcPublicKey, EcdsaSecretKey as PkcSecretKey,
-    EcdsaSignature as PkcSignature,
+    EcdsaSignature as PkcSignature, EcdsaSkBytes,
 };
 use delegate::delegate;
 use hashes::hex::{self, FromHex};
@@ -321,6 +321,10 @@ pub enum EcdsaError {
     /// Signature does not verify against the key and message.
     #[error("signature failed verification")]
     VerifyFailed,
+    /// Not wallet import format: a bad checksum or length, or a 34-byte
+    /// payload not ending in the 0x01 compression flag.
+    #[error("invalid WIF encoding")]
+    InvalidWif,
 }
 
 /// For the backend types used directly; the variants correspond one to one.
@@ -539,10 +543,27 @@ impl EcdsaSecretKey {
                 bytes: &[u8; ECDSA_SK_LEN],
                 [Compression::Compressed],
             ) -> Result<Self, EcdsaError>;
+
+            /// Wraps a big-endian scalar whose public key serializes as
+            /// `compression` says.
+            ///
+            /// # Errors
+            ///
+            /// Returns `InvalidSecretKey` when the scalar is zero or not below
+            /// the curve order.
+            #[call(from_bytes)]
+            #[expr($.map(Self).map_err(|_| EcdsaError::InvalidSecretKey))]
+            pub fn from_bytes_with(
+                bytes: &[u8; ECDSA_SK_LEN],
+                compression: Compression,
+            ) -> Result<Self, EcdsaError>;
         }
         to self.0 {
             /// Copies out the big-endian scalar.
             pub fn to_bytes(&self) -> Zeroizing<[u8; ECDSA_SK_LEN]>;
+
+            /// Whether the public key serializes compressed.
+            pub fn is_compressed(&self) -> bool;
 
             /// Derives the corresponding public key.
             #[expr(EcdsaPublicKey($))]
@@ -575,6 +596,31 @@ impl EcdsaSecretKey {
             /// normalized, not ground).
             pub fn sign_recoverable(&self, msg_hash: &[u8; 32]) -> EcdsaRecSignature;
         }
+    }
+}
+
+impl EcdsaSecretKey {
+    /// The same scalar, with its public key serializing as `compression`
+    /// says.
+    pub fn with_compression(self, compression: Compression) -> Self {
+        Self::from_bytes_with(&self.to_bytes(), compression).expect("the scalar was valid")
+    }
+
+    /// Parses wallet import format, returning the key and its version byte.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidWif` when the string is not wallet import format, or
+    /// `InvalidSecretKey` when the scalar is not below the curve order.
+    pub fn from_wif(s: &str) -> Result<(Self, u8), EcdsaError> {
+        let (bytes, version) = EcdsaSkBytes::from_wif(s).ok_or(EcdsaError::InvalidWif)?;
+        let key = PkcSecretKey::try_from(bytes).map_err(|_| EcdsaError::InvalidSecretKey)?;
+        Ok((Self(key), version))
+    }
+
+    /// Encodes in wallet import format under the version byte `version`.
+    pub fn to_wif(&self, version: u8) -> Zeroizing<String> {
+        EcdsaSkBytes::from(self.0.clone()).to_wif(version).expect("a valid key is non-zero")
     }
 }
 
