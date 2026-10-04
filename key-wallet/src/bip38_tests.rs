@@ -6,13 +6,20 @@
 mod tests {
     use crate::bip38::{encrypt_private_key, Bip38EncryptedKey};
     use crate::Network;
-    use dashcore::ecdsa::EcdsaSecretKey;
+    use dashcore::ecdsa::{Compression, EcdsaSecretKey};
+    use dashcore::PrivateKey;
+
+    fn private(secret: EcdsaSecretKey, compressed: bool, network: Network) -> PrivateKey {
+        PrivateKey {
+            network,
+            inner: secret.with_compression(Compression::from(compressed)),
+        }
+    }
 
     // Test vectors from BIP38 specification
     // https://github.com/bitcoin/bips/blob/master/bip-0038.mediawiki
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_encryption_no_compression() {
         // Test vector: No compression, no EC multiply
         let private_key = EcdsaSecretKey::from_bytes(&[
@@ -26,8 +33,11 @@ mod tests {
         let compressed = false;
 
         // Encrypt the private key
-        let encrypted = encrypt_private_key(&private_key, password, compressed, Network::Mainnet)
-            .expect("Encryption should succeed");
+        let encrypted = encrypt_private_key(
+            &private(private_key.clone(), compressed, Network::Mainnet),
+            password,
+        )
+        .expect("Encryption should succeed");
 
         // The encrypted key should start with "6" in base58 (BIP38 encrypted keys)
         // Note: Bitcoin BIP38 keys start with "6P", but Dash uses different address prefixes
@@ -42,11 +52,14 @@ mod tests {
         // Decrypt and verify
         let decrypted = encrypted.decrypt(password).expect("Decryption should succeed");
 
-        assert_eq!(decrypted, private_key, "Decrypted key should match original");
+        assert_eq!(
+            decrypted.inner.to_bytes(),
+            private_key.to_bytes(),
+            "Decrypted key should match original"
+        );
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_encryption_with_compression() {
         // Test vector: With compression
         let private_key = EcdsaSecretKey::from_bytes(&[
@@ -59,8 +72,11 @@ mod tests {
         let password = "Satoshi";
         let compressed = true;
 
-        let encrypted = encrypt_private_key(&private_key, password, compressed, Network::Mainnet)
-            .expect("Encryption should succeed");
+        let encrypted = encrypt_private_key(
+            &private(private_key.clone(), compressed, Network::Mainnet),
+            password,
+        )
+        .expect("Encryption should succeed");
 
         let encrypted_str = encrypted.to_base58();
         assert!(encrypted_str.starts_with("6"), "Encrypted key should start with 6");
@@ -68,30 +84,14 @@ mod tests {
         // Decrypt and verify
         let decrypted = encrypted.decrypt(password).expect("Decryption should succeed");
 
-        assert_eq!(decrypted, private_key, "Decrypted key should match original");
+        assert_eq!(
+            decrypted.inner.to_bytes(),
+            private_key.to_bytes(),
+            "Decrypted key should match original"
+        );
     }
 
     #[test]
-    #[ignore] // DashSync uses a different BIP38 format that's incompatible
-    fn test_bip38_dashsync_vector() {
-        // Test vector from DashSync (Dash-specific)
-        // From: /Users/samuelw/Documents/src/DashSync/Example/Tests/DSKeyTests.m
-        let encrypted_key = "6PfV898iMrVs3d9gJSw5HTYyGhQRR5xRu5ji4GE6H5QdebT2YgK14Lu1E5";
-        let password = "TestingOneTwoThree";
-
-        let bip38_key =
-            Bip38EncryptedKey::from_base58(encrypted_key).expect("Should parse Dash encrypted key");
-
-        let decrypted =
-            bip38_key.decrypt(password).expect("Decryption should succeed with correct password");
-
-        // DashSync expects this to produce: 7sEJGJRPeGoNBsW8tKAk4JH52xbxrktPfJcNxEx3uf622ZrGR5k
-        // We can at least verify it decrypts successfully
-        assert_eq!(decrypted.to_bytes().len(), 32);
-    }
-
-    #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_wrong_password() {
         // Create an encrypted key
         let private_key = EcdsaSecretKey::from_bytes(&[
@@ -106,9 +106,11 @@ mod tests {
         let compressed = false;
 
         // Encrypt with correct password
-        let encrypted =
-            encrypt_private_key(&private_key, correct_password, compressed, Network::Mainnet)
-                .expect("Encryption should succeed");
+        let encrypted = encrypt_private_key(
+            &private(private_key.clone(), compressed, Network::Mainnet),
+            correct_password,
+        )
+        .expect("Encryption should succeed");
 
         // Try to decrypt with wrong password
         let result = encrypted.decrypt(wrong_password);
@@ -121,11 +123,14 @@ mod tests {
             .decrypt(correct_password)
             .expect("Decryption with correct password should succeed");
 
-        assert_eq!(decrypted, private_key, "Decrypted key should match original");
+        assert_eq!(
+            decrypted.inner.to_bytes(),
+            private_key.to_bytes(),
+            "Decrypted key should match original"
+        );
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_scrypt_parameters() {
         // Test with different key material to verify scrypt parameters
         // BIP38 uses N=16384 (2^14), r=8, p=8
@@ -147,9 +152,11 @@ mod tests {
 
             // Test both compressed and uncompressed
             for compressed in [true, false] {
-                let encrypted =
-                    encrypt_private_key(&private_key, password, compressed, Network::Mainnet)
-                        .expect("Encryption should succeed");
+                let encrypted = encrypt_private_key(
+                    &private(private_key.clone(), compressed, Network::Mainnet),
+                    password,
+                )
+                .expect("Encryption should succeed");
 
                 // Verify the encrypted key format
                 let encrypted_str = encrypted.to_base58();
@@ -159,13 +166,16 @@ mod tests {
                 // Decrypt and verify
                 let decrypted = encrypted.decrypt(password).expect("Decryption should succeed");
 
-                assert_eq!(decrypted, private_key, "Decrypted key should match");
+                assert_eq!(
+                    decrypted.inner.to_bytes(),
+                    private_key.to_bytes(),
+                    "Decrypted key should match"
+                );
             }
         }
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_unicode_password() {
         // Test with Unicode passwords
         let private_key = EcdsaSecretKey::from_bytes(&[0x42u8; 32]).unwrap();
@@ -179,19 +189,25 @@ mod tests {
         ];
 
         for password in unicode_passwords {
-            let encrypted = encrypt_private_key(&private_key, password, false, Network::Mainnet)
-                .expect("Encryption with Unicode password should succeed");
+            let encrypted = encrypt_private_key(
+                &private(private_key.clone(), false, Network::Mainnet),
+                password,
+            )
+            .expect("Encryption with Unicode password should succeed");
 
             let decrypted = encrypted
                 .decrypt(password)
                 .expect("Decryption with Unicode password should succeed");
 
-            assert_eq!(decrypted, private_key, "Unicode password should work correctly");
+            assert_eq!(
+                decrypted.inner.to_bytes(),
+                private_key.to_bytes(),
+                "Unicode password should work correctly"
+            );
         }
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_network_differences() {
         // Test that different networks produce different encrypted keys
         // (due to different address prefixes affecting the salt)
@@ -199,13 +215,17 @@ mod tests {
         let password = "NetworkTest";
         let compressed = false;
 
-        let encrypted_mainnet =
-            encrypt_private_key(&private_key, password, compressed, Network::Mainnet)
-                .expect("Mainnet encryption should succeed");
+        let encrypted_mainnet = encrypt_private_key(
+            &private(private_key.clone(), compressed, Network::Mainnet),
+            password,
+        )
+        .expect("Mainnet encryption should succeed");
 
-        let encrypted_testnet =
-            encrypt_private_key(&private_key, password, compressed, Network::Testnet)
-                .expect("Testnet encryption should succeed");
+        let encrypted_testnet = encrypt_private_key(
+            &private(private_key.clone(), compressed, Network::Testnet),
+            password,
+        )
+        .expect("Testnet encryption should succeed");
 
         // The encrypted keys should be different due to different address hashes
         assert_ne!(
@@ -218,42 +238,45 @@ mod tests {
         let decrypted_mainnet = encrypted_mainnet.decrypt(password).unwrap();
         let decrypted_testnet = encrypted_testnet.decrypt(password).unwrap();
 
-        assert_eq!(decrypted_mainnet, private_key);
-        assert_eq!(decrypted_testnet, private_key);
-        assert_eq!(decrypted_mainnet, decrypted_testnet);
+        assert_eq!(decrypted_mainnet.inner.to_bytes(), private_key.to_bytes());
+        assert_eq!(decrypted_testnet.inner.to_bytes(), private_key.to_bytes());
+        assert_eq!(decrypted_mainnet.inner.to_bytes(), decrypted_testnet.inner.to_bytes());
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_edge_cases() {
         // Test edge cases
 
         // Empty password (should work but not recommended)
         let private_key = EcdsaSecretKey::from_bytes(&[0x99u8; 32]).unwrap();
-        let encrypted = encrypt_private_key(&private_key, "", false, Network::Mainnet)
-            .expect("Empty password should work");
+        let encrypted =
+            encrypt_private_key(&private(private_key.clone(), false, Network::Mainnet), "")
+                .expect("Empty password should work");
         let decrypted = encrypted.decrypt("").unwrap();
-        assert_eq!(decrypted, private_key);
+        assert_eq!(decrypted.inner.to_bytes(), private_key.to_bytes());
 
         // Very long password
         let long_password = "a".repeat(1000);
-        let encrypted_long =
-            encrypt_private_key(&private_key, &long_password, false, Network::Mainnet)
-                .expect("Long password should work");
+        let encrypted_long = encrypt_private_key(
+            &private(private_key.clone(), false, Network::Mainnet),
+            &long_password,
+        )
+        .expect("Long password should work");
         let decrypted_long = encrypted_long.decrypt(&long_password).unwrap();
-        assert_eq!(decrypted_long, private_key);
+        assert_eq!(decrypted_long.inner.to_bytes(), private_key.to_bytes());
 
         // Password with special characters
         let special_password = "!@#$%^&*()_+-=[]{}|;':\",./<>?`~";
-        let encrypted_special =
-            encrypt_private_key(&private_key, special_password, false, Network::Mainnet)
-                .expect("Special characters should work");
+        let encrypted_special = encrypt_private_key(
+            &private(private_key.clone(), false, Network::Mainnet),
+            special_password,
+        )
+        .expect("Special characters should work");
         let decrypted_special = encrypted_special.decrypt(special_password).unwrap();
-        assert_eq!(decrypted_special, private_key);
+        assert_eq!(decrypted_special.inner.to_bytes(), private_key.to_bytes());
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_round_trip() {
         // Test multiple round-trip encrypt/decrypt cycles
         use rand::Rng;
@@ -283,15 +306,21 @@ mod tests {
                     let compressed = rng.random_bool(0.5);
 
                     // Encrypt
-                    let encrypted =
-                        encrypt_private_key(&key, &password, compressed, Network::Mainnet)
-                            .expect("Encryption should succeed");
+                    let encrypted = encrypt_private_key(
+                        &private(key.clone(), compressed, Network::Mainnet),
+                        &password,
+                    )
+                    .expect("Encryption should succeed");
 
                     // Decrypt
                     let decrypted =
                         encrypted.decrypt(&password).expect("Decryption should succeed");
 
-                    assert_eq!(decrypted, key, "Round-trip should preserve the key");
+                    assert_eq!(
+                        decrypted.inner.to_bytes(),
+                        key.to_bytes(),
+                        "Round-trip should preserve the key"
+                    );
                     break;
                 }
             }
@@ -303,21 +332,19 @@ mod tests {
     fn test_bip38_invalid_base58() {
         // Test invalid base58 input
         let invalid = "InvalidBase58String!!!";
-        Bip38EncryptedKey::from_base58(invalid).unwrap();
+        Bip38EncryptedKey::from_base58(invalid, Network::Mainnet).unwrap();
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_invalid_prefix() {
         // Test with wrong prefix (not starting with 6P)
         // A regular WIF private key
         let wif = "5KN7MzqK5wt2TP1fQCYyHBtDrXdJuXbUzm4A9rKAteGu3Qi5CVR";
-        let result = Bip38EncryptedKey::from_base58(wif);
+        let result = Bip38EncryptedKey::from_base58(wif, Network::Mainnet);
         assert!(result.is_err(), "Should reject non-BIP38 keys");
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_performance() {
         // Test that encryption/decryption completes in reasonable time
         // BIP38 is intentionally slow (scrypt), but should complete within a few seconds
@@ -327,8 +354,9 @@ mod tests {
         let password = "PerformanceTest";
 
         let start = Instant::now();
-        let encrypted = encrypt_private_key(&private_key, password, false, Network::Mainnet)
-            .expect("Encryption should succeed");
+        let encrypted =
+            encrypt_private_key(&private(private_key.clone(), false, Network::Mainnet), password)
+                .expect("Encryption should succeed");
         let encrypt_duration = start.elapsed();
 
         let start = Instant::now();

@@ -15,24 +15,34 @@ use core::fmt;
 
 use crate::error::{Error, Result};
 use crate::Network;
-use dashcore::Address;
-
-use dashcore::ecdsa::EcdsaSecretKey;
+use dashcore::ecdsa::{Compression, EcdsaSecretKey};
+use dashcore::{Address, PrivateKey};
 use dashcore_hashes::{sha256d, Hash};
+use unicode_normalization::UnicodeNormalization;
 
 // BIP38 constants
 const BIP38_PREFIX_NON_EC: [u8; 2] = [0x01, 0x42];
 const BIP38_PREFIX_EC: [u8; 2] = [0x01, 0x43];
+/// The two high bits every non-EC-multiplied flag byte carries.
+const BIP38_FLAG_NON_EC: u8 = 0xC0;
 const BIP38_FLAG_COMPRESSED: u8 = 0x20;
 const BIP38_FLAG_EC_LOT_SEQUENCE: u8 = 0x04;
-const _BIP38_FLAG_EC_INVALID: u8 = 0x10;
+/// Intermediate code magic, without and with lot/sequence numbers.
+const BIP38_MAGIC_NO_LOT: [u8; 8] = [0x2C, 0xE9, 0xB3, 0xE1, 0xFF, 0x39, 0xE2, 0x53];
+const BIP38_MAGIC_LOT: [u8; 8] = [0x2C, 0xE9, 0xB3, 0xE1, 0xFF, 0x39, 0xE2, 0x51];
+const BIP38_KEY_LEN: usize = 39;
 
-// Scrypt parameters
-#[allow(dead_code)]
-const SCRYPT_N: u32 = 16384; // 2^14
+// Scrypt parameters for the passphrase (n = 2^14) and, in EC-multiply mode,
+// for the passpoint (n = 2^10).
+const SCRYPT_LOG_N: u8 = 14;
 const SCRYPT_R: u32 = 8;
 const SCRYPT_P: u32 = 8;
+const SCRYPT_SEED_LOG_N: u8 = 10;
 const SCRYPT_KEY_LEN: usize = 64;
+
+/// Renders a public key as the address string BIP38 hashes. Dash uses its
+/// own P2PKH encoding, which is how the spec has alt-chains tell keys apart.
+type AddressFn<'a> = &'a dyn Fn(&dashcore::PublicKey) -> String;
 
 /// BIP38 encryption mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,37 +62,42 @@ pub struct Bip38EncryptedKey {
     mode: Bip38Mode,
     /// Whether the key is compressed
     compressed: bool,
-    /// Network (derived from address)
+    /// The network whose address the key hashes
     network: Network,
 }
 
 impl Bip38EncryptedKey {
-    /// Create from a base58-encoded BIP38 string
-    pub fn from_base58(s: &str) -> Result<Self> {
+    /// Parses a base58-encoded BIP38 key for `network`.
+    ///
+    /// The address hash inside the key depends on the network's address
+    /// encoding, so decryption only succeeds under the network it was made
+    /// for.
+    pub fn from_base58(s: &str, network: Network) -> Result<Self> {
         let data = base58::decode_check(s)
             .map_err(|_| Error::InvalidParameter("Invalid base58 encoding".into()))?;
 
-        if data.len() != 39 {
+        if data.len() != BIP38_KEY_LEN {
             return Err(Error::InvalidParameter("Invalid BIP38 key length".into()));
         }
 
         let prefix = [data[0], data[1]];
         let flag = data[2];
+        let compressed = (flag & BIP38_FLAG_COMPRESSED) != 0;
 
-        let (mode, compressed) = if prefix == BIP38_PREFIX_NON_EC {
-            let compressed = (flag & BIP38_FLAG_COMPRESSED) != 0;
-            (Bip38Mode::NonEcMultiply, compressed)
+        // Every bit the spec does not assign must be clear.
+        let mode = if prefix == BIP38_PREFIX_NON_EC {
+            if flag & !BIP38_FLAG_COMPRESSED != BIP38_FLAG_NON_EC {
+                return Err(Error::InvalidParameter("Invalid BIP38 flag byte".into()));
+            }
+            Bip38Mode::NonEcMultiply
         } else if prefix == BIP38_PREFIX_EC {
-            let compressed = (flag & BIP38_FLAG_COMPRESSED) != 0;
-            (Bip38Mode::EcMultiply, compressed)
+            if flag & !(BIP38_FLAG_COMPRESSED | BIP38_FLAG_EC_LOT_SEQUENCE) != 0 {
+                return Err(Error::InvalidParameter("Invalid BIP38 flag byte".into()));
+            }
+            Bip38Mode::EcMultiply
         } else {
             return Err(Error::InvalidParameter("Invalid BIP38 prefix".into()));
         };
-
-        // Try to determine network from address hash
-        // In BIP38, bytes 3-6 are the address hash
-        // We'll default to mainnet for now
-        let network = Network::Mainnet;
 
         Ok(Self {
             data,
@@ -97,219 +112,148 @@ impl Bip38EncryptedKey {
         base58::encode_check(&self.data)
     }
 
-    /// Decrypt the key with a password
-    pub fn decrypt(&self, password: &str) -> Result<EcdsaSecretKey> {
-        match self.mode {
-            Bip38Mode::NonEcMultiply => self.decrypt_non_ec_multiply(password),
-            Bip38Mode::EcMultiply => self.decrypt_ec_multiply(password),
-        }
+    /// The encryption mode.
+    pub fn mode(&self) -> Bip38Mode {
+        self.mode
     }
 
-    /// Decrypt non-EC-multiply mode
-    fn decrypt_non_ec_multiply(&self, password: &str) -> Result<EcdsaSecretKey> {
-        if self.data.len() != 39 {
-            return Err(Error::InvalidParameter("Invalid encrypted key length".into()));
-        }
+    /// Whether the key's address uses the compressed public key.
+    pub fn is_compressed(&self) -> bool {
+        self.compressed
+    }
 
-        let _flag = self.data[2];
-        let address_hash = &self.data[3..7];
-        let encrypted = &self.data[7..39];
+    /// The network whose address the key hashes.
+    pub fn network(&self) -> Network {
+        self.network
+    }
 
-        // Derive key from password using scrypt
-        let mut derived_key = vec![0u8; SCRYPT_KEY_LEN];
-        scrypt::scrypt(
-            password.as_bytes(),
-            address_hash,
-            &scrypt::Params::new(14, SCRYPT_R, SCRYPT_P, SCRYPT_KEY_LEN).unwrap(),
-            &mut derived_key,
-        )
-        .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
+    /// Decrypts the key with `password`, keeping its compression and network.
+    pub fn decrypt(&self, password: &str) -> Result<PrivateKey> {
+        let network = self.network;
+        let secret = self.decrypt_with(password, &|pk| Address::p2pkh(pk, network).to_string())?;
+        Ok(if self.compressed {
+            PrivateKey::new(secret, network)
+        } else {
+            PrivateKey::new_uncompressed(secret, network)
+        })
+    }
 
-        // Split derived key
-        let derive_half1 = &derived_key[0..32];
-        let derive_half2 = &derived_key[32..64];
+    fn decrypt_with(&self, password: &str, address: AddressFn) -> Result<EcdsaSecretKey> {
+        let secret = match self.mode {
+            Bip38Mode::NonEcMultiply => self.decrypt_non_ec_multiply(password)?,
+            Bip38Mode::EcMultiply => self.decrypt_ec_multiply(password)?,
+        };
 
-        // Decrypt with AES
-        let decrypted = aes_decrypt(encrypted, derive_half2)?;
-
-        // XOR with derive_half1 to get the private key
-        let mut private_key = [0u8; 32];
-        for i in 0..32 {
-            private_key[i] = decrypted[i] ^ derive_half1[i];
-        }
-
-        // Create secret key
-        let secret = EcdsaSecretKey::from_bytes(&private_key)
-            .map_err(|_| Error::InvalidParameter("Invalid private key".into()))?;
-
-        // Verify by checking address hash
-        let address = self.derive_address(&secret)?;
-        let computed_hash = address_hash_from_address(&address);
-
-        if &computed_hash[0..4] != address_hash {
+        // A wrong passphrase yields some other key, caught by the hash.
+        if address_hash(&secret, self.compressed, address) != self.data[3..7] {
             return Err(Error::InvalidParameter("Invalid password".into()));
         }
 
         Ok(secret)
     }
 
-    /// Decrypt EC-multiply mode
-    fn decrypt_ec_multiply(&self, password: &str) -> Result<EcdsaSecretKey> {
-        if self.data.len() != 39 {
-            return Err(Error::InvalidParameter("Invalid encrypted key length".into()));
-        }
-
-        let flag = self.data[2];
-        let has_lot_sequence = (flag & BIP38_FLAG_EC_LOT_SEQUENCE) != 0;
-
+    /// Decrypt non-EC-multiply mode
+    fn decrypt_non_ec_multiply(&self, password: &str) -> Result<EcdsaSecretKey> {
         let address_hash = &self.data[3..7];
-        let owner_salt = if has_lot_sequence {
-            &self.data[7..11]
-        } else {
-            &self.data[7..15]
-        };
+        let derived =
+            scrypt(normalize(password).as_bytes(), address_hash, SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P)?;
+        let (derived_half1, derived_half2) = derived.split_at(32);
 
-        let encrypted_part1 = &self.data[15..23];
-        let encrypted_part2 = &self.data[23..39];
+        let mut private_key = [0u8; 32];
+        for (half, out) in
+            [&self.data[7..23], &self.data[23..39]].iter().zip(private_key.chunks_mut(16))
+        {
+            let block = aes_decrypt_block(half, derived_half2);
+            out.copy_from_slice(&block);
+        }
+        xor_in_place(&mut private_key, derived_half1);
 
-        // Derive intermediate passphrase
-        let pass_factor = if has_lot_sequence {
-            // Include lot and sequence in derivation
-            let lot_sequence = &self.data[11..15];
-            let mut pre_factor = Vec::new();
-            pre_factor.extend_from_slice(password.as_bytes());
-            pre_factor.extend_from_slice(owner_salt);
-            pre_factor.extend_from_slice(lot_sequence);
-
-            let mut pass_factor = vec![0u8; 32];
-            scrypt::scrypt(
-                &pre_factor,
-                &[],
-                &scrypt::Params::new(14, SCRYPT_R, SCRYPT_P, 32).unwrap(),
-                &mut pass_factor,
-            )
-            .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
-            pass_factor
-        } else {
-            // Simple derivation
-            let mut pass_factor = vec![0u8; 32];
-            scrypt::scrypt(
-                password.as_bytes(),
-                owner_salt,
-                &scrypt::Params::new(14, SCRYPT_R, SCRYPT_P, 32).unwrap(),
-                &mut pass_factor,
-            )
-            .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
-            pass_factor
-        };
-
-        // Derive pass_point from pass_factor
-        let pass_factor_key = EcdsaSecretKey::from_bytes(
-            &pass_factor
-                .as_slice()
-                .try_into()
-                .map_err(|_| Error::KeyError("Invalid pass factor".into()))?,
-        )
-        .map_err(|_| Error::KeyError("Invalid pass factor".into()))?;
-        let pass_point = pass_factor_key.public_key();
-
-        // Derive encryption key from pass_point and address_hash
-        let mut derived_key = vec![0u8; SCRYPT_KEY_LEN];
-        let pass_point_bytes = if self.compressed {
-            pass_point.to_compressed().to_vec()
-        } else {
-            pass_point.to_uncompressed().to_vec()
-        };
-
-        scrypt::scrypt(
-            &pass_point_bytes,
-            address_hash,
-            &scrypt::Params::new(10, 1, 1, SCRYPT_KEY_LEN).unwrap(),
-            &mut derived_key,
-        )
-        .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
-
-        // Decrypt seed
-        let derive_half2 = &derived_key[32..64];
-        let mut decrypted = Vec::new();
-        decrypted.extend_from_slice(&aes_decrypt(encrypted_part2, derive_half2)?);
-        decrypted.extend_from_slice(&aes_decrypt(
-            &[encrypted_part1, &decrypted[0..8]].concat(),
-            derive_half2,
-        )?);
-
-        let seed_b = &decrypted[0..24];
-        let factor_b = sha256d::Hash::hash(seed_b).to_byte_array();
-
-        // Multiply to get private key
-        let factor_b_key = EcdsaSecretKey::from_bytes(&factor_b)
-            .map_err(|_| Error::KeyError("Invalid factor b".into()))?;
-
-        pass_factor_key
-            .mul_tweak(&factor_b_key.to_bytes())
-            .map_err(|_| Error::KeyError("Key multiplication failed".into()))
+        EcdsaSecretKey::from_bytes(&private_key)
+            .map_err(|_| Error::InvalidParameter("Invalid password".into()))
     }
 
-    /// Derive address from secret key
-    fn derive_address(&self, secret: &EcdsaSecretKey) -> Result<Address> {
-        let public_key = secret.public_key();
-        let dash_pubkey = dashcore::PublicKey::new(public_key);
-        Ok(Address::p2pkh(&dash_pubkey, self.network))
+    /// Decrypt EC-multiply mode
+    fn decrypt_ec_multiply(&self, password: &str) -> Result<EcdsaSecretKey> {
+        let has_lot_sequence = (self.data[2] & BIP38_FLAG_EC_LOT_SEQUENCE) != 0;
+        let address_hash = &self.data[3..7];
+        let owner_entropy: [u8; 8] = self.data[7..15].try_into().expect("8 bytes");
+        let encrypted_part1_head = &self.data[15..23];
+        let encrypted_part2 = &self.data[23..39];
+
+        let pass_factor = pass_factor(password, &owner_entropy, has_lot_sequence)?;
+        let pass_point = pass_factor.public_key().to_compressed();
+
+        let mut salt = [0u8; 12];
+        salt[..4].copy_from_slice(address_hash);
+        salt[4..].copy_from_slice(&owner_entropy);
+        let derived = scrypt(&pass_point, &salt, SCRYPT_SEED_LOG_N, 1, 1)?;
+        let (derived_half1, derived_half2) = derived.split_at(32);
+
+        // encryptedpart2 holds the tail of encryptedpart1 and of seedb.
+        let mut part2 = aes_decrypt_block(encrypted_part2, derived_half2);
+        xor_in_place(&mut part2, &derived_half1[16..32]);
+
+        let mut encrypted_part1 = [0u8; 16];
+        encrypted_part1[..8].copy_from_slice(encrypted_part1_head);
+        encrypted_part1[8..].copy_from_slice(&part2[..8]);
+        let mut part1 = aes_decrypt_block(&encrypted_part1, derived_half2);
+        xor_in_place(&mut part1, &derived_half1[..16]);
+
+        let mut seed_b = [0u8; 24];
+        seed_b[..16].copy_from_slice(&part1);
+        seed_b[16..].copy_from_slice(&part2[8..]);
+        let factor_b = sha256d::Hash::hash(&seed_b).to_byte_array();
+
+        pass_factor
+            .mul_tweak(&factor_b)
+            .map_err(|_| Error::InvalidParameter("Invalid password".into()))
     }
 }
 
-/// Encrypt a private key with a password (non-EC-multiply mode)
-pub fn encrypt_private_key(
-    private_key: &EcdsaSecretKey,
-    password: &str,
-    compressed: bool,
-    network: Network,
-) -> Result<Bip38EncryptedKey> {
-    let public_key = private_key.public_key();
-    let dash_pubkey = dashcore::PublicKey::new(public_key);
-    let address = Address::p2pkh(&dash_pubkey, network);
-    let address_hash = address_hash_from_address(&address);
-
-    // Derive encryption key using scrypt
-    let mut derived_key = vec![0u8; SCRYPT_KEY_LEN];
-    scrypt::scrypt(
-        password.as_bytes(),
-        &address_hash[0..4],
-        &scrypt::Params::new(14, SCRYPT_R, SCRYPT_P, SCRYPT_KEY_LEN).unwrap(),
-        &mut derived_key,
-    )
-    .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
-
-    let derive_half1 = &derived_key[0..32];
-    let derive_half2 = &derived_key[32..64];
-
-    // XOR private key with derive_half1
-    let private_bytes = private_key.to_bytes();
-    let mut to_encrypt = [0u8; 32];
-    for i in 0..32 {
-        to_encrypt[i] = private_bytes[i] ^ derive_half1[i];
-    }
-
-    // Encrypt with AES
-    let encrypted = aes_encrypt(&to_encrypt, derive_half2)?;
-
-    // Build the final encrypted key
-    let mut data = Vec::new();
-    data.extend_from_slice(&BIP38_PREFIX_NON_EC);
-    data.push(if compressed {
-        BIP38_FLAG_COMPRESSED
-    } else {
-        0x00
-    });
-    data.extend_from_slice(&address_hash[0..4]);
-    data.extend_from_slice(&encrypted);
+/// Encrypts `private_key` with `password` (non-EC-multiply mode), hashing
+/// the address in the key's own compression and network.
+pub fn encrypt_private_key(private_key: &PrivateKey, password: &str) -> Result<Bip38EncryptedKey> {
+    let network = private_key.network;
+    let data = encrypt_with(&private_key.inner, private_key.is_compressed(), password, &|pk| {
+        Address::p2pkh(pk, network).to_string()
+    })?;
 
     Ok(Bip38EncryptedKey {
         data,
         mode: Bip38Mode::NonEcMultiply,
-        compressed,
+        compressed: private_key.is_compressed(),
         network,
     })
+}
+
+fn encrypt_with(
+    secret: &EcdsaSecretKey,
+    compressed: bool,
+    password: &str,
+    address: AddressFn,
+) -> Result<Vec<u8>> {
+    let address_hash = address_hash(secret, compressed, address);
+    let derived =
+        scrypt(normalize(password).as_bytes(), &address_hash, SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P)?;
+    let (derived_half1, derived_half2) = derived.split_at(32);
+
+    let mut to_encrypt = secret.to_bytes();
+    xor_in_place(&mut *to_encrypt, derived_half1);
+
+    let mut data = Vec::with_capacity(BIP38_KEY_LEN);
+    data.extend_from_slice(&BIP38_PREFIX_NON_EC);
+    data.push(
+        BIP38_FLAG_NON_EC
+            | if compressed {
+                BIP38_FLAG_COMPRESSED
+            } else {
+                0
+            },
+    );
+    data.extend_from_slice(&address_hash);
+    data.extend_from_slice(&aes_encrypt_block(&to_encrypt[..16], derived_half2));
+    data.extend_from_slice(&aes_encrypt_block(&to_encrypt[16..], derived_half2));
+    Ok(data)
 }
 
 /// Generate an intermediate code for EC-multiply mode
@@ -321,68 +265,41 @@ pub fn generate_intermediate_code(
     use rand::Rng;
     let mut rng = rand::rng();
 
-    let (owner_salt, pass_factor) = if let (Some(lot), Some(sequence)) = (lot, sequence) {
-        // With lot and sequence
-        if lot > 1048575 || sequence > 4095 {
-            return Err(Error::InvalidParameter("Lot/sequence out of range".into()));
+    let mut owner_entropy = [0u8; 8];
+    let has_lot_sequence = match (lot, sequence) {
+        (Some(lot), Some(sequence)) => {
+            if lot > 1048575 || sequence > 4095 {
+                return Err(Error::InvalidParameter("Lot/sequence out of range".into()));
+            }
+            // 4 random bytes of owner salt, then the lot and sequence.
+            rng.fill(&mut owner_entropy[..4]);
+            owner_entropy[4..].copy_from_slice(&(lot * 4096 + sequence).to_be_bytes());
+            true
         }
-
-        let mut owner_salt = [0u8; 4];
-        rng.fill(&mut owner_salt);
-
-        let mut lot_sequence = [0u8; 4];
-        let combined = (lot * 4096) + sequence;
-        lot_sequence[0] = (combined >> 24) as u8;
-        lot_sequence[1] = (combined >> 16) as u8;
-        lot_sequence[2] = (combined >> 8) as u8;
-        lot_sequence[3] = combined as u8;
-
-        let mut pre_factor = Vec::new();
-        pre_factor.extend_from_slice(password.as_bytes());
-        pre_factor.extend_from_slice(&owner_salt);
-        pre_factor.extend_from_slice(&lot_sequence);
-
-        let mut pass_factor = vec![0u8; 32];
-        scrypt::scrypt(
-            &pre_factor,
-            &[],
-            &scrypt::Params::new(14, SCRYPT_R, SCRYPT_P, 32).unwrap(),
-            &mut pass_factor,
-        )
-        .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
-
-        (owner_salt.to_vec(), pass_factor)
-    } else {
-        // Without lot and sequence
-        let mut owner_salt = [0u8; 8];
-        rng.fill(&mut owner_salt);
-
-        let mut pass_factor = vec![0u8; 32];
-        scrypt::scrypt(
-            password.as_bytes(),
-            &owner_salt,
-            &scrypt::Params::new(14, SCRYPT_R, SCRYPT_P, 32).unwrap(),
-            &mut pass_factor,
-        )
-        .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
-
-        (owner_salt.to_vec(), pass_factor)
+        _ => {
+            rng.fill(&mut owner_entropy);
+            false
+        }
     };
 
-    // Compute passpoint
-    let pass_factor_key = EcdsaSecretKey::from_bytes(
-        &pass_factor
-            .as_slice()
-            .try_into()
-            .map_err(|_| Error::KeyError("Invalid pass factor".into()))?,
-    )
-    .map_err(|_| Error::KeyError("Invalid pass factor".into()))?;
-    let pass_point = pass_factor_key.public_key();
+    intermediate_code(password, &owner_entropy, has_lot_sequence)
+}
 
-    // Build intermediate code
-    let mut data = Vec::new();
-    data.extend_from_slice(&[0x2C, 0xE9, 0xB3, 0xE1, 0xFF, 0x39, 0xE2, 0x53]);
-    data.extend_from_slice(&owner_salt);
+fn intermediate_code(
+    password: &str,
+    owner_entropy: &[u8; 8],
+    has_lot_sequence: bool,
+) -> Result<String> {
+    let pass_factor = pass_factor(password, owner_entropy, has_lot_sequence)?;
+    let pass_point = pass_factor.public_key();
+
+    let mut data = Vec::with_capacity(49);
+    data.extend_from_slice(if has_lot_sequence {
+        &BIP38_MAGIC_LOT
+    } else {
+        &BIP38_MAGIC_NO_LOT
+    });
+    data.extend_from_slice(owner_entropy);
     data.extend_from_slice(&pass_point.to_compressed());
 
     Ok(base58::encode_check(&data))
@@ -390,65 +307,84 @@ pub fn generate_intermediate_code(
 
 // Helper functions
 
-/// Compute address hash for BIP38
-fn address_hash_from_address(address: &Address) -> [u8; 4] {
-    let address_str = address.to_string();
-    let hash = sha256d::Hash::hash(address_str.as_bytes());
-    let mut result = [0u8; 4];
-    result.copy_from_slice(&hash[0..4]);
-    result
+/// The EC-multiply passfactor. With lot/sequence numbers the scrypt output
+/// is a prefactor, hashed together with the owner entropy.
+fn pass_factor(
+    password: &str,
+    owner_entropy: &[u8; 8],
+    has_lot_sequence: bool,
+) -> Result<EcdsaSecretKey> {
+    let owner_salt = if has_lot_sequence {
+        &owner_entropy[..4]
+    } else {
+        &owner_entropy[..]
+    };
+    let scrypted =
+        scrypt(normalize(password).as_bytes(), owner_salt, SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P)?;
+
+    let factor: [u8; 32] = if has_lot_sequence {
+        let mut pre = [0u8; 40];
+        pre[..32].copy_from_slice(&scrypted[..32]);
+        pre[32..].copy_from_slice(owner_entropy);
+        sha256d::Hash::hash(&pre).to_byte_array()
+    } else {
+        scrypted[..32].try_into().expect("32 bytes")
+    };
+
+    EcdsaSecretKey::from_bytes(&factor).map_err(|_| Error::KeyError("Invalid pass factor".into()))
 }
 
-/// AES-256-ECB encryption
+/// The first four bytes of SHA256(SHA256(address)), for the key's address.
+fn address_hash(secret: &EcdsaSecretKey, compressed: bool, address: AddressFn) -> [u8; 4] {
+    let public_key = dashcore::PublicKey {
+        compressed,
+        inner: secret.public_key(),
+    };
+    let hash = sha256d::Hash::hash(address(&public_key).as_bytes()).to_byte_array();
+    hash[..4].try_into().expect("4 bytes")
+}
+
+/// The passphrase in Unicode Normalization Form C, as the spec requires.
+fn normalize(password: &str) -> String {
+    password.nfc().collect()
+}
+
+/// scrypt with 64 bytes of output.
+fn scrypt(password: &[u8], salt: &[u8], log_n: u8, r: u32, p: u32) -> Result<[u8; SCRYPT_KEY_LEN]> {
+    let params = scrypt::Params::new(log_n, r, p, SCRYPT_KEY_LEN)
+        .map_err(|_| Error::KeyError("Invalid scrypt parameters".into()))?;
+    let mut out = [0u8; SCRYPT_KEY_LEN];
+    scrypt::scrypt(password, salt, &params, &mut out)
+        .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
+    Ok(out)
+}
+
+fn xor_in_place(data: &mut [u8], key: &[u8]) {
+    for (d, k) in data.iter_mut().zip(key) {
+        *d ^= k;
+    }
+}
+
+/// AES-256 on one 16-byte block, without chaining.
 #[allow(deprecated)]
-fn aes_encrypt(data: &[u8], key: &[u8]) -> Result<Vec<u8>> {
+fn aes_encrypt_block(block: &[u8], key: &[u8]) -> [u8; 16] {
     use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
     use aes::Aes256;
 
-    if data.len() != 32 || key.len() != 32 {
-        return Err(Error::InvalidParameter("Invalid data or key length".into()));
-    }
-
-    let cipher = Aes256::new(GenericArray::from_slice(key));
-    let mut encrypted = Vec::new();
-
-    // Encrypt two blocks (16 bytes each)
-    let mut block1 = GenericArray::clone_from_slice(&data[0..16]);
-    let mut block2 = GenericArray::clone_from_slice(&data[16..32]);
-
-    cipher.encrypt_block(&mut block1);
-    cipher.encrypt_block(&mut block2);
-
-    encrypted.extend_from_slice(&block1);
-    encrypted.extend_from_slice(&block2);
-
-    Ok(encrypted)
+    let mut block = GenericArray::clone_from_slice(block);
+    Aes256::new(GenericArray::from_slice(key)).encrypt_block(&mut block);
+    block.into()
 }
 
-/// AES-256-ECB decryption
+/// Inverse of [`aes_encrypt_block`].
 #[allow(deprecated)]
-fn aes_decrypt(data: &[u8], key: &[u8]) -> Result<Vec<u8>> {
+fn aes_decrypt_block(block: &[u8], key: &[u8]) -> [u8; 16] {
     use aes::cipher::{generic_array::GenericArray, BlockDecrypt, KeyInit};
     use aes::Aes256;
 
-    if data.len() != 32 || key.len() != 32 {
-        return Err(Error::InvalidParameter("Invalid data or key length".into()));
-    }
-
-    let cipher = Aes256::new(GenericArray::from_slice(key));
-    let mut decrypted = Vec::new();
-
-    // Decrypt two blocks (16 bytes each)
-    let mut block1 = GenericArray::clone_from_slice(&data[0..16]);
-    let mut block2 = GenericArray::clone_from_slice(&data[16..32]);
-
-    cipher.decrypt_block(&mut block1);
-    cipher.decrypt_block(&mut block2);
-
-    decrypted.extend_from_slice(&block1);
-    decrypted.extend_from_slice(&block2);
-
-    Ok(decrypted)
+    let mut block = GenericArray::clone_from_slice(block);
+    Aes256::new(GenericArray::from_slice(key)).decrypt_block(&mut block);
+    block.into()
 }
 
 impl fmt::Display for Bip38EncryptedKey {
@@ -508,7 +444,11 @@ impl Bip38Builder {
         let password =
             self.password.as_ref().ok_or(Error::InvalidParameter("Password required".into()))?;
 
-        encrypt_private_key(private_key, password, self.compressed, self.network)
+        let private_key = PrivateKey {
+            network: self.network,
+            inner: private_key.clone().with_compression(Compression::from(self.compressed)),
+        };
+        encrypt_private_key(&private_key, password)
     }
 
     /// Generate an intermediate code for EC-multiply mode
@@ -529,177 +469,170 @@ impl Default for Bip38Builder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dashcore::hashes::Hash;
+    use test_case::test_case;
 
-    // Test vectors from BIP38 specification
-    const _TEST_VECTOR_1_ENCRYPTED: &str =
-        "6PRVWUbkzzsbcVac2qwfssoUJAN1Xhrg6bNk8J7Nzm5H7kxEbn2Nh2ZoGg";
-    const _TEST_VECTOR_1_PASSWORD: &str = "TestingOneTwoThree";
-    const _TEST_VECTOR_1_WIF: &str = "5KN7MzqK5wt2TP1fQCYyHBtDrXdJuXbUzm4A9rKAteGu3Qi5CVR";
+    /// The P2PKH encoding the BIP38 test vectors hash: Bitcoin's, version 0.
+    fn bitcoin_address(pk: &dashcore::PublicKey) -> String {
+        let mut payload = vec![0u8];
+        payload.extend_from_slice(pk.pubkey_hash().as_byte_array());
+        base58::encode_check(&payload)
+    }
 
-    const _TEST_VECTOR_2_ENCRYPTED: &str =
-        "6PRNFFkZc2NZ6dJqFfhRoFNMR9Lnyj7dYGrzdgXXVMXcxoKTePPX1dWByq";
-    const _TEST_VECTOR_2_PASSWORD: &str = "Satoshi";
-    const _TEST_VECTOR_2_WIF: &str = "5HtasZ6ofTHP6HCwTqTkLDuLQisYPah7aUnSKfC7h4hMUVw2gi5";
+    fn hex32(s: &str) -> [u8; 32] {
+        hex::decode(s).unwrap().try_into().unwrap()
+    }
 
-    #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
-    fn test_bip38_encryption() {
-        // Create a test private key
-        let private_key = EcdsaSecretKey::from_bytes(&[
-            0x0C, 0x28, 0xFC, 0xA3, 0x86, 0xC7, 0xA2, 0x27, 0x60, 0x0B, 0x2F, 0xE5, 0x0B, 0x7C,
-            0xAE, 0x11, 0xEC, 0x86, 0xD3, 0xBF, 0x1F, 0xBE, 0x47, 0x1B, 0xE8, 0x98, 0x27, 0xE1,
-            0x9D, 0x72, 0xAA, 0x1D,
-        ])
-        .unwrap();
+    #[test_case(
+        "TestingOneTwoThree",
+        "6PRVWUbkzzsbcVac2qwfssoUJAN1Xhrg6bNk8J7Nzm5H7kxEbn2Nh2ZoGg",
+        "CBF4B9F70470856BB4F40F80B87EDB90865997FFEE6DF315AB166D713AF433A5"
+        ; "uncompressed 1"
+    )]
+    #[test_case(
+        "Satoshi",
+        "6PRNFFkZc2NZ6dJqFfhRoFNMR9Lnyj7dYGrzdgXXVMXcxoKTePPX1dWByq",
+        "09C2686880095B1A4C249EE3AC4EEA8A014F11E6F986D0B5025AC1F39AFBD9AE"
+        ; "uncompressed 2"
+    )]
+    #[test_case(
+        "TestingOneTwoThree",
+        "6PYNKZ1EAgYgmQfmNVamxyXVWHzK5s6DGhwP4J5o44cvXdoY7sRzhtpUeo",
+        "CBF4B9F70470856BB4F40F80B87EDB90865997FFEE6DF315AB166D713AF433A5"
+        ; "compressed 1"
+    )]
+    #[test_case(
+        "Satoshi",
+        "6PYLtMnXvfG3oJde97zRyLYFZCYizPU5T3LwgdYJz1fRhh16bU7u6PPmY7",
+        "09C2686880095B1A4C249EE3AC4EEA8A014F11E6F986D0B5025AC1F39AFBD9AE"
+        ; "compressed 2"
+    )]
+    fn spec_vectors_non_ec_multiply(password: &str, encrypted: &str, hex: &str) {
+        let key = Bip38EncryptedKey::from_base58(encrypted, Network::Mainnet).unwrap();
+        assert_eq!(key.mode(), Bip38Mode::NonEcMultiply);
+        let secret = key.decrypt_with(password, &bitcoin_address).unwrap();
+        assert_eq!(*secret.to_bytes(), hex32(hex));
 
-        let encrypted =
-            encrypt_private_key(&private_key, "TestingOneTwoThree", false, Network::Mainnet)
-                .unwrap();
+        let data = encrypt_with(&secret, key.is_compressed(), password, &bitcoin_address).unwrap();
+        assert_eq!(base58::encode_check(&data), encrypted);
 
-        // Decrypt and verify
-        let decrypted = encrypted.decrypt("TestingOneTwoThree").unwrap();
-        assert_eq!(private_key.to_bytes(), decrypted.to_bytes());
+        assert!(key.decrypt_with("wrong", &bitcoin_address).is_err());
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
-    fn test_bip38_decryption() {
-        // Test with known encrypted key (would need actual test vector)
-        // This is a placeholder - in production we'd use actual BIP38 test vectors
-
-        // Create and encrypt a key
-        let private_key = EcdsaSecretKey::from_bytes(&[
-            0x0C, 0x28, 0xFC, 0xA3, 0x86, 0xC7, 0xA2, 0x27, 0x60, 0x0B, 0x2F, 0xE5, 0x0B, 0x7C,
-            0xAE, 0x11, 0xEC, 0x86, 0xD3, 0xBF, 0x1F, 0xBE, 0x47, 0x1B, 0xE8, 0x98, 0x27, 0xE1,
-            0x9D, 0x72, 0xAA, 0x1D,
-        ])
-        .unwrap();
-
-        let password = "MySecretPassword123!";
-
-        let encrypted = encrypt_private_key(
-            &private_key,
-            password,
-            true, // compressed
+    fn spec_vector_unicode_passphrase_is_nfc_normalized() {
+        // U+03D2 U+0301 normalizes to U+03D3 under NFC.
+        let password = "\u{03D2}\u{0301}\u{0000}\u{10400}\u{1F4A9}";
+        let key = Bip38EncryptedKey::from_base58(
+            "6PRW5o9FLp4gJDDVqJQKJFTpMvdsSGJxMYHtHaQBF3ooa8mwD69bapcDQn",
             Network::Mainnet,
         )
         .unwrap();
-
-        // Convert to base58 and back
-        let base58 = encrypted.to_base58();
-        assert!(base58.starts_with("6")); // BIP38 encrypted keys start with 6
-
-        let restored = Bip38EncryptedKey::from_base58(&base58).unwrap();
-        assert_eq!(encrypted, restored);
-
-        // Decrypt with correct password
-        let decrypted = restored.decrypt(password).unwrap();
-        assert_eq!(private_key.to_bytes(), decrypted.to_bytes());
-
-        // Try with wrong password (should fail)
-        let wrong = restored.decrypt("WrongPassword");
-        assert!(wrong.is_err());
+        let secret = key.decrypt_with(password, &bitcoin_address).unwrap();
+        let public_key = dashcore::PublicKey::new_uncompressed(secret.public_key());
+        assert_eq!(bitcoin_address(&public_key), "16ktGzmfrurhbhi6JGqsMWf7TyqK9HNAeF");
     }
 
+    #[test_case(
+        "TestingOneTwoThree",
+        "passphrasepxFy57B9v8HtUsszJYKReoNDV6VHjUSGt8EVJmux9n1J3Ltf1gRxyDGXqnf9qm",
+        "6PfQu77ygVyJLZjfvMLyhLMQbYnu5uguoJJ4kMCLqWwPEdfpwANVS76gTX",
+        "A43A940577F4E97F5C4D39EB14FF083A98187C64EA7C99EF7CE460833959A519"
+        ; "no lot 1"
+    )]
+    #[test_case(
+        "Satoshi",
+        "passphraseoRDGAXTWzbp72eVbtUDdn1rwpgPUGjNZEc6CGBo8i5EC1FPW8wcnLdq4ThKzAS",
+        "6PfLGnQs6VZnrNpmVKfjotbnQuaJK4KZoPFrAjx1JMJUa1Ft8gnf5WxfKd",
+        "C2C8036DF268F498099350718C4A3EF3984D2BE84618C2650F5171DCC5EB660A"
+        ; "no lot 2"
+    )]
+    #[test_case(
+        "MOLON LABE",
+        "passphraseaB8feaLQDENqCgr4gKZpmf4VoaT6qdjJNJiv7fsKvjqavcJxvuR1hy25aTu5sX",
+        "6PgNBNNzDkKdhkT6uJntUXwwzQV8Rr2tZcbkDcuC9DZRsS6AtHts4Ypo1j",
+        "44EA95AFBF138356A05EA32110DFD627232D0F2991AD221187BE356F19FA8190"
+        ; "lot 1"
+    )]
+    #[test_case(
+        "\u{039C}\u{039F}\u{039B}\u{03A9}\u{039D} \u{039B}\u{0391}\u{0392}\u{0395}",
+        "passphrased3z9rQJHSyBkNBwTRPkUGNVEVrUAcfAXDyRU1V28ie6hNFbqDwbFBvsTK7yWVK",
+        "6PgGWtx25kUg8QWvwuJAgorN6k9FbE25rv5dMRwu5SKMnfpfVe5mar2ngH",
+        "CA2759AA4ADB0F96C414F36ABEB8DB59342985BE9FA50FAAC228C8E7D90E3006"
+        ; "lot 2 greek"
+    )]
+    fn spec_vectors_ec_multiply(password: &str, code: &str, encrypted: &str, hex: &str) {
+        let key = Bip38EncryptedKey::from_base58(encrypted, Network::Mainnet).unwrap();
+        assert_eq!(key.mode(), Bip38Mode::EcMultiply);
+        let secret = key.decrypt_with(password, &bitcoin_address).unwrap();
+        assert_eq!(*secret.to_bytes(), hex32(hex));
+        assert!(key.decrypt_with("wrong", &bitcoin_address).is_err());
+
+        // The owner entropy is fixed by the vector; the rest must match.
+        let decoded = base58::decode_check(code).unwrap();
+        let has_lot_sequence = decoded[..8] == BIP38_MAGIC_LOT;
+        let owner_entropy: [u8; 8] = decoded[8..16].try_into().unwrap();
+        assert_eq!(intermediate_code(password, &owner_entropy, has_lot_sequence).unwrap(), code);
+    }
+
+    /// An EC-multiplied key from DashSync, hashed with a Dash address.
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
-    fn test_bip38_compressed_uncompressed() {
-        let private_key = EcdsaSecretKey::from_bytes(&[
-            0x64, 0x4D, 0xC7, 0x6B, 0x88, 0xDF, 0x64, 0xC3, 0xE4, 0x8A, 0xB6, 0x59, 0x5C, 0xBB,
-            0x5C, 0x46, 0x8D, 0x63, 0xF2, 0x0B, 0x5C, 0x8D, 0x17, 0x39, 0xB1, 0x5A, 0x8C, 0x3D,
-            0x7F, 0xC9, 0x77, 0x0C,
-        ])
+    fn dash_vector_ec_multiply() {
+        let key = Bip38EncryptedKey::from_base58(
+            "6PfV898iMrVs3d9gJSw5HTYyGhQRR5xRu5ji4GE6H5QdebT2YgK14Lu1E5",
+            Network::Mainnet,
+        )
         .unwrap();
-
-        let password = "TestPassword";
-
-        // Test uncompressed
-        let uncompressed =
-            encrypt_private_key(&private_key, password, false, Network::Mainnet).unwrap();
-
-        assert!(!uncompressed.compressed);
-        let decrypted_uncomp = uncompressed.decrypt(password).unwrap();
-        assert_eq!(private_key.to_bytes(), decrypted_uncomp.to_bytes());
-
-        // Test compressed
-        let compressed =
-            encrypt_private_key(&private_key, password, true, Network::Mainnet).unwrap();
-
-        assert!(compressed.compressed);
-        let decrypted_comp = compressed.decrypt(password).unwrap();
-        assert_eq!(private_key.to_bytes(), decrypted_comp.to_bytes());
-
-        // Encrypted keys should be different
-        assert_ne!(uncompressed.to_base58(), compressed.to_base58());
+        let private_key = key.decrypt("TestingOneTwoThree").unwrap();
+        assert_eq!(private_key.to_wif(), "7sEJGJRPeGoNBsW8tKAk4JH52xbxrktPfJcNxEx3uf622ZrGR5k");
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
-    fn test_bip38_builder() {
-        let private_key = EcdsaSecretKey::from_bytes(&[
-            0x0C, 0x28, 0xFC, 0xA3, 0x86, 0xC7, 0xA2, 0x27, 0x60, 0x0B, 0x2F, 0xE5, 0x0B, 0x7C,
-            0xAE, 0x11, 0xEC, 0x86, 0xD3, 0xBF, 0x1F, 0xBE, 0x47, 0x1B, 0xE8, 0x98, 0x27, 0xE1,
-            0x9D, 0x72, 0xAA, 0x1D,
-        ])
-        .unwrap();
+    fn round_trip_keeps_compression_and_network() {
+        let secret = EcdsaSecretKey::from_bytes(&[0x42; 32]).unwrap();
+        for network in [Network::Mainnet, Network::Testnet] {
+            for private_key in [
+                PrivateKey::new(secret.clone(), network),
+                PrivateKey::new_uncompressed(secret.clone(), network),
+            ] {
+                let encrypted = encrypt_private_key(&private_key, "pass").unwrap();
+                let parsed =
+                    Bip38EncryptedKey::from_base58(&encrypted.to_base58(), network).unwrap();
+                assert_eq!(parsed, encrypted);
+                assert_eq!(parsed.decrypt("pass").unwrap(), private_key);
+            }
+        }
 
-        let encrypted = Bip38Builder::new()
-            .password("TestPassword123".to_string())
-            .compressed(true)
-            .network(Network::Testnet)
-            .encrypt(&private_key)
-            .unwrap();
-
-        assert!(encrypted.compressed);
-        assert_eq!(encrypted.network, Network::Testnet);
-
-        let decrypted = encrypted.decrypt("TestPassword123").unwrap();
-        assert_eq!(private_key.to_bytes(), decrypted.to_bytes());
+        // The address hash binds the key to its network.
+        let encrypted =
+            encrypt_private_key(&PrivateKey::new(secret.clone(), Network::Testnet), "pass")
+                .unwrap();
+        let on_mainnet =
+            Bip38EncryptedKey::from_base58(&encrypted.to_base58(), Network::Mainnet).unwrap();
+        assert!(on_mainnet.decrypt("pass").is_err());
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
-    fn test_intermediate_code_generation() {
-        let intermediate = generate_intermediate_code("password", None, None).unwrap();
+    fn flag_byte_reserved_bits_are_rejected() {
+        let valid =
+            base58::decode_check("6PRVWUbkzzsbcVac2qwfssoUJAN1Xhrg6bNk8J7Nzm5H7kxEbn2Nh2ZoGg")
+                .unwrap();
+        assert_eq!(valid[2], BIP38_FLAG_NON_EC);
 
-        // Intermediate codes should be valid base58
-        // Note: They don't necessarily start with "passphrase" in our implementation
-        assert!(!intermediate.is_empty());
-
-        // Test with lot/sequence
-        let intermediate_lot =
-            generate_intermediate_code("password", Some(100000), Some(1)).unwrap();
-        // Just verify it's a valid base58 string
-        assert!(!intermediate_lot.is_empty());
-    }
-
-    #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
-    fn test_address_hash() {
-        // Test address hash computation
-        let private_key = EcdsaSecretKey::from_bytes(&[
-            0x0C, 0x28, 0xFC, 0xA3, 0x86, 0xC7, 0xA2, 0x27, 0x60, 0x0B, 0x2F, 0xE5, 0x0B, 0x7C,
-            0xAE, 0x11, 0xEC, 0x86, 0xD3, 0xBF, 0x1F, 0xBE, 0x47, 0x1B, 0xE8, 0x98, 0x27, 0xE1,
-            0x9D, 0x72, 0xAA, 0x1D,
-        ])
-        .unwrap();
-
-        let public_key = private_key.public_key();
-        let dash_pubkey = dashcore::PublicKey::new(public_key);
-        let dash_network = Network::Mainnet;
-        let address = Address::p2pkh(&dash_pubkey, dash_network);
-        let hash = address_hash_from_address(&address);
-
-        assert_eq!(hash.len(), 4);
-    }
-
-    #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
-    fn test_scrypt_parameters() {
-        // Verify scrypt parameters match BIP38 spec
-        assert_eq!(SCRYPT_N, 16384); // 2^14
-        assert_eq!(SCRYPT_R, 8);
-        assert_eq!(SCRYPT_P, 8);
-        assert_eq!(SCRYPT_KEY_LEN, 64);
+        // Non-EC keys must set 0xC0; neither mode may set reserved bits or,
+        // for non-EC keys, the lot/sequence bit.
+        for (prefix, flag) in [
+            (BIP38_PREFIX_NON_EC, 0x00),
+            (BIP38_PREFIX_NON_EC, 0xC4),
+            (BIP38_PREFIX_NON_EC, 0xC8),
+            (BIP38_PREFIX_EC, 0xC0),
+            (BIP38_PREFIX_EC, 0x10),
+        ] {
+            let mut data = valid.clone();
+            data[..2].copy_from_slice(&prefix);
+            data[2] = flag;
+            let s = base58::encode_check(&data);
+            assert!(Bip38EncryptedKey::from_base58(&s, Network::Mainnet).is_err(), "{flag:#04x}");
+        }
     }
 }
