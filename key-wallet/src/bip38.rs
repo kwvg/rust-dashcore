@@ -17,8 +17,8 @@ use crate::error::{Error, Result};
 use crate::Network;
 use dashcore::Address;
 
+use dashcore_hashes::{sha256d, Hash};
 use secp256k1::{PublicKey, SecretKey};
-use sha2::{Digest, Sha256};
 
 // BIP38 constants
 const BIP38_PREFIX_NON_EC: [u8; 2] = [0x01, 0x42];
@@ -59,9 +59,7 @@ pub struct Bip38EncryptedKey {
 impl Bip38EncryptedKey {
     /// Create from a base58-encoded BIP38 string
     pub fn from_base58(s: &str) -> Result<Self> {
-        let data = bs58::decode(s)
-            .with_check(None)
-            .into_vec()
+        let data = base58::decode_check(s)
             .map_err(|_| Error::InvalidParameter("Invalid base58 encoding".into()))?;
 
         if data.len() != 39 {
@@ -96,7 +94,7 @@ impl Bip38EncryptedKey {
 
     /// Convert to base58 string
     pub fn to_base58(&self) -> String {
-        bs58::encode(&self.data).with_check().into_string()
+        base58::encode_check(&self.data)
     }
 
     /// Decrypt the key with a password
@@ -241,7 +239,7 @@ impl Bip38EncryptedKey {
         )?);
 
         let seed_b = &decrypted[0..24];
-        let factor_b = double_sha256(seed_b);
+        let factor_b = sha256d::Hash::hash(seed_b).to_byte_array();
 
         // Multiply to get private key
         let factor_b_key = SecretKey::from_secret_bytes(factor_b)
@@ -390,7 +388,7 @@ pub fn generate_intermediate_code(
     data.extend_from_slice(&owner_salt);
     data.extend_from_slice(&pass_point.serialize());
 
-    Ok(bs58::encode(&data).with_check().into_string())
+    Ok(base58::encode_check(&data))
 }
 
 // Helper functions
@@ -398,18 +396,9 @@ pub fn generate_intermediate_code(
 /// Compute address hash for BIP38
 fn address_hash_from_address(address: &Address) -> [u8; 4] {
     let address_str = address.to_string();
-    let hash = double_sha256(address_str.as_bytes());
+    let hash = sha256d::Hash::hash(address_str.as_bytes());
     let mut result = [0u8; 4];
     result.copy_from_slice(&hash[0..4]);
-    result
-}
-
-/// Double SHA256
-fn double_sha256(data: &[u8]) -> [u8; 32] {
-    let first = Sha256::digest(data);
-    let second = Sha256::digest(first);
-    let mut result = [0u8; 32];
-    result.copy_from_slice(&second);
     result
 }
 
