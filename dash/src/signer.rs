@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail};
 use hashes::{Hash, hash160, sha256d};
 
 use crate::PublicKey as ECDSAPublicKey;
-use crate::crypto::ecdsa::{EcdsaPublicKey, EcdsaSecretKey};
+use crate::crypto::ecdsa::{EcdsaPublicKey, EcdsaSecretKey, EcdsaSignature};
 use crate::prelude::Vec;
 use crate::sign_message::MessageSignature;
 
@@ -23,7 +23,10 @@ pub fn verify_data_signature(
 
     let pub_key = ECDSAPublicKey::from_slice(public_key).map_err(anyhow::Error::msg)?;
 
-    pub_key.inner.verify(&data_hash, sig.signature()).map_err(anyhow::Error::msg)
+    pub_key
+        .inner
+        .verify(&data_hash, EcdsaSignature::from(*sig.signature()))
+        .map_err(anyhow::Error::msg)
 }
 
 /// verifies the the hash signature. From provided signature and hash recovers the public key
@@ -67,8 +70,7 @@ pub fn sign_hash(data_hash: &[u8], private_key: &[u8]) -> Result<[u8; 65], anyho
     let data_hash: &[u8; 32] = data_hash.try_into().map_err(|_| anyhow!("Invalid hash length"))?;
 
     let signature = pk.sign_recoverable(data_hash);
-    // TODO the compression flag should be obtained from the private key type
-    Ok(MessageSignature::new(signature, true).serialize())
+    Ok(MessageSignature::new(signature).serialize())
 }
 
 /// calculates double sha256 on data

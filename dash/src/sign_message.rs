@@ -41,7 +41,7 @@ mod message_signing {
     use hashes::{Hash, sha256d};
     use internals::write_err;
 
-    use crate::crypto::ecdsa::{EcdsaError, EcdsaPublicKey, EcdsaRecSignature, EcdsaSignature};
+    use crate::crypto::ecdsa::{EcdsaError, EcdsaPublicKey, EcdsaRecSigBytes, EcdsaRecSignature};
 
     use crate::address::{Address, AddressType, Payload};
     use crate::crypto::key::PublicKey;
@@ -102,51 +102,34 @@ mod message_signing {
     /// must be enabled.
     #[derive(Copy, Clone, PartialEq, Eq, Debug)]
     pub struct MessageSignature {
-        /// The inner recoverable signature.
+        /// The inner recoverable signature, which also records whether the
+        /// signing key was compressed.
         pub signature: EcdsaRecSignature,
-        /// Whether or not this signature was created with a compressed key.
-        pub compressed: bool,
     }
 
     impl MessageSignature {
         /// Create a new [MessageSignature].
-        pub fn new(signature: EcdsaRecSignature, compressed: bool) -> MessageSignature {
+        pub fn new(signature: EcdsaRecSignature) -> MessageSignature {
             MessageSignature {
                 signature,
-                compressed,
             }
         }
 
         /// Serialize to bytes.
         pub fn serialize(&self) -> [u8; 65] {
-            let raw = self.signature.to_compact();
-            let mut serialized = [0u8; 65];
-            serialized[0] = 27;
-            serialized[0] += self.signature.recovery_id();
-            if self.compressed {
-                serialized[0] += 4;
-            }
-            serialized[1..].copy_from_slice(&raw[..]);
-            serialized
+            EcdsaRecSigBytes::from(self.signature).to_bytes()
         }
 
         /// Create from a byte slice.
+        ///
+        /// The header byte must be in `27..=34`, the range that encodes a
+        /// recovery id and a compression flag.
         pub fn from_slice(bytes: &[u8]) -> Result<MessageSignature, MessageSignatureError> {
-            if bytes.len() != 65 {
-                return Err(MessageSignatureError::InvalidLength);
-            }
-            // Headers 27..=34 encode a recovery id and a compression flag;
-            // anything else is rejected.
-            if !(27..=34).contains(&bytes[0]) {
-                return Err(MessageSignatureError::InvalidEncoding(EcdsaError::InvalidRecoveryId));
-            };
-            let raw = bytes[1..].try_into().expect("65 - 1 == 64, the signature length");
+            let bytes: [u8; 65] =
+                bytes.try_into().map_err(|_| MessageSignatureError::InvalidLength)?;
+            let bytes = EcdsaRecSigBytes::from_raw(bytes).ok_or(EcdsaError::InvalidRecoveryId)?;
             Ok(MessageSignature {
-                signature: EcdsaRecSignature::from_parts(
-                    EcdsaSignature::from_bytes(raw)?,
-                    (bytes[0] - 27) & 0x03,
-                )?,
-                compressed: ((bytes[0] - 27) & 0x04) != 0,
+                signature: EcdsaRecSignature::try_from(bytes).map_err(EcdsaError::from)?,
             })
         }
 
@@ -160,7 +143,7 @@ mod message_signing {
             let pubkey = EcdsaPublicKey::recover(msg_hash.as_byte_array(), &self.signature)?;
             Ok(PublicKey {
                 inner: pubkey,
-                compressed: self.compressed,
+                compressed: self.signature.is_compressed(),
             })
         }
 
@@ -255,10 +238,7 @@ mod tests {
         let msg_hash = signed_msg_hash(message);
 
         let privkey = EcdsaSecretKey::from(secp256k1::SecretKey::new(&mut secp256k1::rand::rng()));
-        let signature = MessageSignature {
-            signature: privkey.sign_recoverable(msg_hash.as_byte_array()),
-            compressed: true,
-        };
+        let signature = MessageSignature::new(privkey.sign_recoverable(msg_hash.as_byte_array()));
 
         assert_eq!(signature.to_base64(), signature.to_string());
         let signature2 = MessageSignature::from_str(&signature.to_string()).unwrap();
@@ -291,6 +271,34 @@ mod tests {
                 crate::crypto::ecdsa::EcdsaError::InvalidRecoveryId
             ))
         );
+    }
+
+    #[test]
+    #[cfg(feature = "secp-recovery")]
+    fn test_message_signature_header() {
+        use crate::crypto::ecdsa::{Compression, EcdsaError, EcdsaRecSignature, EcdsaSecretKey};
+
+        let rec = EcdsaSecretKey::from_bytes(&[0x42; 32]).unwrap().sign_recoverable(&[7; 32]);
+        let id = rec.recovery_id();
+        let uncompressed =
+            EcdsaRecSignature::from_parts(*rec.signature(), id, Compression::Uncompressed).unwrap();
+
+        // The compression flag lives in the signature and sets the header.
+        let compressed = MessageSignature::new(rec).serialize();
+        assert_eq!(compressed[0], 31 + id);
+        let bytes = MessageSignature::new(uncompressed).serialize();
+        assert_eq!(bytes[0], 27 + id);
+        assert_eq!(MessageSignature::from_slice(&bytes).unwrap().signature, uncompressed);
+
+        // Only 27..=34 encode a recovery id and compression flag.
+        for header in [26, 35] {
+            let mut bad = compressed;
+            bad[0] = header;
+            assert_eq!(
+                MessageSignature::from_slice(&bad),
+                Err(MessageSignatureError::InvalidEncoding(EcdsaError::InvalidRecoveryId))
+            );
+        }
     }
 
     #[test]

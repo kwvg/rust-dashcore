@@ -13,9 +13,11 @@ use core::str::FromStr;
 use core::{fmt, iter};
 
 use ambassador::{delegatable_trait_remote, Delegate};
+/// No newtype for these: none of our callers needs them to behave differently
+/// from the backend's.
+pub use dash_pkc::ecdsa::{Compression, EcdsaDerSig, EcdsaRecSigBytes, EcdsaRecSignature};
 use dash_pkc::ecdsa::{
-    Compression, EcdsaDerSig as PkcDerSig, EcdsaPublicKey as PkcPublicKey,
-    EcdsaRecSignature as PkcRecSignature, EcdsaSecretKey as PkcSecretKey,
+    EcdsaError as PkcError, EcdsaPublicKey as PkcPublicKey, EcdsaSecretKey as PkcSecretKey,
     EcdsaSignature as PkcSignature,
 };
 use delegate::delegate;
@@ -321,6 +323,22 @@ pub enum EcdsaError {
     VerifyFailed,
 }
 
+/// For the backend types used directly; the variants correspond one to one.
+impl From<PkcError> for EcdsaError {
+    fn from(e: PkcError) -> Self {
+        match e {
+            PkcError::InvalidPublicKey => Self::InvalidPublicKey,
+            PkcError::InvalidRecoveryId => Self::InvalidRecoveryId,
+            // Only DER-encoded secret keys report this.
+            PkcError::InvalidSecretKey | PkcError::MalformedDer => Self::InvalidSecretKey,
+            PkcError::InvalidSignature => Self::InvalidSignature,
+            PkcError::InvalidTweak => Self::InvalidTweak,
+            PkcError::RecoveryFailed => Self::RecoveryFailed,
+            PkcError::VerifyFailed => Self::VerifyFailed,
+        }
+    }
+}
+
 /// A secp256k1 public key (a curve point, without a serialization form).
 ///
 /// The backend's type stays behind this one; convert with [`From`] where a
@@ -340,6 +358,18 @@ impl EcdsaPublicKey {
             /// encoding of a curve point.
             #[expr($.map(Self).map_err(|_| EcdsaError::InvalidPublicKey))]
             pub fn from_bytes(bytes: &[u8]) -> Result<Self, EcdsaError>;
+
+            /// Recovers the signing key from a recoverable signature over the
+            /// 32-byte prehashed message.
+            ///
+            /// # Errors
+            ///
+            /// Returns `RecoveryFailed` when no key can be recovered.
+            #[expr($.map(Self).map_err(|_| EcdsaError::RecoveryFailed))]
+            pub fn recover(
+                msg_hash: &[u8; 32],
+                sig: &EcdsaRecSignature,
+            ) -> Result<Self, EcdsaError>;
         }
         to self.0 {
             /// The compressed SEC1 encoding.
@@ -370,16 +400,6 @@ impl EcdsaPublicKey {
         sig: impl AsRef<EcdsaSignature>,
     ) -> Result<(), EcdsaError> {
         self.0.verify(msg_hash, sig.as_ref().0).map_err(|_| EcdsaError::VerifyFailed)
-    }
-
-    /// Recovers the signing key from a recoverable signature over the 32-byte
-    /// prehashed message.
-    ///
-    /// # Errors
-    ///
-    /// Returns `RecoveryFailed` when no key can be recovered.
-    pub fn recover(msg_hash: &[u8; 32], sig: &EcdsaRecSignature) -> Result<Self, EcdsaError> {
-        PkcPublicKey::recover(msg_hash, &sig.0).map(Self).map_err(|_| EcdsaError::RecoveryFailed)
     }
 }
 
@@ -553,7 +573,6 @@ impl EcdsaSecretKey {
 
             /// Signs a 32-byte prehashed message recoverably (RFC 6979, low-S
             /// normalized, not ground).
-            #[expr(EcdsaRecSignature($))]
             pub fn sign_recoverable(&self, msg_hash: &[u8; 32]) -> EcdsaRecSignature;
         }
     }
@@ -660,7 +679,6 @@ impl EcdsaSignature {
             pub fn to_bytes(&self) -> [u8; ECDSA_SIG_LEN];
 
             /// The DER encoding.
-            #[expr(EcdsaDerSig($))]
             pub fn to_der(&self) -> EcdsaDerSig;
         }
     }
@@ -706,6 +724,13 @@ impl From<EcdsaSignature> for secp256k1::ecdsa::Signature {
     }
 }
 
+/// The plain signature inside an [`EcdsaRecSignature`].
+impl From<PkcSignature> for EcdsaSignature {
+    fn from(inner: PkcSignature) -> Self {
+        Self(inner)
+    }
+}
+
 /// A hex string of the DER encoding in human-readable formats, the DER byte
 /// string otherwise.
 #[cfg(feature = "serde")]
@@ -745,87 +770,6 @@ impl<'de> serde::Deserialize<'de> for EcdsaSignature {
         } else {
             d.deserialize_bytes(DerVisitor)
         }
-    }
-}
-
-/// A recoverable secp256k1 ECDSA signature: the signature and the recovery
-/// id (`0..=3`) that selects the signing key among the candidates.
-///
-/// The backend's type stays behind this one; convert with [`From`] where a
-/// backend-only API still needs it.
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub struct EcdsaRecSignature(PkcRecSignature);
-
-impl EcdsaRecSignature {
-    delegate! {
-        to PkcRecSignature {
-            /// Pairs a signature with its recovery id.
-            ///
-            /// # Errors
-            ///
-            /// Returns `InvalidRecoveryId` when `recovery_id` is not in
-            /// `0..=3`.
-            #[expr($.map(Self).map_err(|_| EcdsaError::InvalidRecoveryId))]
-            pub fn from_parts(
-                #[newtype] sig: EcdsaSignature,
-                recovery_id: u8,
-                [Compression::Compressed],
-            ) -> Result<Self, EcdsaError>;
-        }
-        to self.0 {
-            /// The recovery id, in `0..=3`.
-            pub fn recovery_id(&self) -> u8;
-
-            /// The signature without its recovery id.
-            #[expr(EcdsaSignature(*$))]
-            pub fn signature(&self) -> EcdsaSignature;
-
-            /// The compact (`r || s`) encoding of the signature.
-            pub fn to_compact(&self) -> [u8; ECDSA_SIG_LEN];
-        }
-    }
-}
-
-impl fmt::Debug for EcdsaRecSignature {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "EcdsaRecSignature({}, {:x})", self.recovery_id(), self.to_compact().as_hex())
-    }
-}
-
-impl From<secp256k1::ecdsa::RecoverableSignature> for EcdsaRecSignature {
-    fn from(inner: secp256k1::ecdsa::RecoverableSignature) -> Self {
-        Self(PkcRecSignature::from(inner))
-    }
-}
-
-impl From<EcdsaRecSignature> for secp256k1::ecdsa::RecoverableSignature {
-    fn from(sig: EcdsaRecSignature) -> Self {
-        Self::try_from(sig.0).expect("a parsed signature converts back")
-    }
-}
-
-/// A DER-encoded ECDSA signature, held in-line.
-#[derive(Clone, Eq, Hash, PartialEq)]
-pub struct EcdsaDerSig(PkcDerSig);
-
-impl EcdsaDerSig {
-    delegate! {
-        to self.0 {
-            /// The DER bytes.
-            pub fn as_bytes(&self) -> &[u8];
-
-            /// The DER length.
-            pub fn len(&self) -> usize;
-
-            /// Whether the encoding is empty (never, for a valid signature).
-            pub fn is_empty(&self) -> bool;
-        }
-    }
-}
-
-impl fmt::Debug for EcdsaDerSig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "EcdsaDerSig({:x})", self.as_bytes().as_hex())
     }
 }
 

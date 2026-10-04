@@ -411,10 +411,8 @@ fn test_verify_message(cl: &Client) {
     let addr = cl.get_new_address(None).unwrap().require_network(*NET).unwrap();
     let sk = cl.dump_private_key(&addr).unwrap();
     let message = "rust-dashcore verify_message test";
-    let signature = MessageSignature::new(
-        sk.inner.sign_recoverable(signed_msg_hash(message).as_byte_array()),
-        sk.compressed,
-    );
+    let signature =
+        MessageSignature::new(sk.inner.sign_recoverable(signed_msg_hash(message).as_byte_array()));
 
     assert!(cl.verify_message(&addr, &signature, message).unwrap());
     assert!(!cl.verify_message(&addr, &signature, "a different message").unwrap());
