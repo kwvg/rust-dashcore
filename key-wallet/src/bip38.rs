@@ -28,6 +28,9 @@ const BIP38_PREFIX_EC: [u8; 2] = [0x01, 0x43];
 const BIP38_FLAG_NON_EC: u8 = 0xC0;
 const BIP38_FLAG_COMPRESSED: u8 = 0x20;
 const BIP38_FLAG_EC_LOT_SEQUENCE: u8 = 0x04;
+/// Intermediate code magic, without and with lot/sequence numbers.
+const BIP38_MAGIC_NO_LOT: [u8; 8] = [0x2C, 0xE9, 0xB3, 0xE1, 0xFF, 0x39, 0xE2, 0x53];
+const BIP38_MAGIC_LOT: [u8; 8] = [0x2C, 0xE9, 0xB3, 0xE1, 0xFF, 0x39, 0xE2, 0x51];
 
 // Scrypt parameters
 #[allow(dead_code)]
@@ -178,54 +181,12 @@ impl Bip38EncryptedKey {
         let has_lot_sequence = (flag & BIP38_FLAG_EC_LOT_SEQUENCE) != 0;
 
         let address_hash = &self.data[3..7];
-        let owner_salt = if has_lot_sequence {
-            &self.data[7..11]
-        } else {
-            &self.data[7..15]
-        };
+        let owner_entropy: [u8; 8] = self.data[7..15].try_into().expect("8 bytes");
 
         let encrypted_part1 = &self.data[15..23];
         let encrypted_part2 = &self.data[23..39];
 
-        // Derive intermediate passphrase
-        let pass_factor = if has_lot_sequence {
-            // Include lot and sequence in derivation
-            let lot_sequence = &self.data[11..15];
-            let mut pre_factor = Vec::new();
-            pre_factor.extend_from_slice(password.as_bytes());
-            pre_factor.extend_from_slice(owner_salt);
-            pre_factor.extend_from_slice(lot_sequence);
-
-            let mut pass_factor = vec![0u8; 32];
-            scrypt::scrypt(
-                &pre_factor,
-                &[],
-                &scrypt::Params::new(14, SCRYPT_R, SCRYPT_P, 32).unwrap(),
-                &mut pass_factor,
-            )
-            .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
-            pass_factor
-        } else {
-            // Simple derivation
-            let mut pass_factor = vec![0u8; 32];
-            scrypt::scrypt(
-                password.as_bytes(),
-                owner_salt,
-                &scrypt::Params::new(14, SCRYPT_R, SCRYPT_P, 32).unwrap(),
-                &mut pass_factor,
-            )
-            .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
-            pass_factor
-        };
-
-        // Derive pass_point from pass_factor
-        let pass_factor_key = SecretKey::from_secret_bytes(
-            pass_factor
-                .as_slice()
-                .try_into()
-                .map_err(|_| Error::KeyError("Invalid pass factor".into()))?,
-        )
-        .map_err(|_| Error::KeyError("Invalid pass factor".into()))?;
+        let pass_factor_key = pass_factor(password, &owner_entropy, has_lot_sequence)?;
         let pass_point = PublicKey::from_secret_key(&pass_factor_key);
 
         // Derive encryption key from pass_point and address_hash
@@ -342,78 +303,81 @@ pub fn generate_intermediate_code(
     lot: Option<u32>,
     sequence: Option<u32>,
 ) -> Result<String> {
-    let password = &normalize(password);
     use rand::Rng;
     let mut rng = rand::rng();
 
-    let (owner_salt, pass_factor) = if let (Some(lot), Some(sequence)) = (lot, sequence) {
-        // With lot and sequence
-        if lot > 1048575 || sequence > 4095 {
-            return Err(Error::InvalidParameter("Lot/sequence out of range".into()));
+    let mut owner_entropy = [0u8; 8];
+    let has_lot_sequence = match (lot, sequence) {
+        (Some(lot), Some(sequence)) => {
+            if lot > 1048575 || sequence > 4095 {
+                return Err(Error::InvalidParameter("Lot/sequence out of range".into()));
+            }
+            // 4 random bytes of owner salt, then the lot and sequence.
+            rng.fill(&mut owner_entropy[..4]);
+            owner_entropy[4..].copy_from_slice(&(lot * 4096 + sequence).to_be_bytes());
+            true
         }
-
-        let mut owner_salt = [0u8; 4];
-        rng.fill(&mut owner_salt);
-
-        let mut lot_sequence = [0u8; 4];
-        let combined = (lot * 4096) + sequence;
-        lot_sequence[0] = (combined >> 24) as u8;
-        lot_sequence[1] = (combined >> 16) as u8;
-        lot_sequence[2] = (combined >> 8) as u8;
-        lot_sequence[3] = combined as u8;
-
-        let mut pre_factor = Vec::new();
-        pre_factor.extend_from_slice(password.as_bytes());
-        pre_factor.extend_from_slice(&owner_salt);
-        pre_factor.extend_from_slice(&lot_sequence);
-
-        let mut pass_factor = vec![0u8; 32];
-        scrypt::scrypt(
-            &pre_factor,
-            &[],
-            &scrypt::Params::new(14, SCRYPT_R, SCRYPT_P, 32).unwrap(),
-            &mut pass_factor,
-        )
-        .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
-
-        (owner_salt.to_vec(), pass_factor)
-    } else {
-        // Without lot and sequence
-        let mut owner_salt = [0u8; 8];
-        rng.fill(&mut owner_salt);
-
-        let mut pass_factor = vec![0u8; 32];
-        scrypt::scrypt(
-            password.as_bytes(),
-            &owner_salt,
-            &scrypt::Params::new(14, SCRYPT_R, SCRYPT_P, 32).unwrap(),
-            &mut pass_factor,
-        )
-        .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
-
-        (owner_salt.to_vec(), pass_factor)
+        _ => {
+            rng.fill(&mut owner_entropy);
+            false
+        }
     };
 
-    // Compute passpoint
-    let pass_factor_key = SecretKey::from_secret_bytes(
-        pass_factor
-            .as_slice()
-            .try_into()
-            .map_err(|_| Error::KeyError("Invalid pass factor".into()))?,
-    )
-    .map_err(|_| Error::KeyError("Invalid pass factor".into()))?;
-    let pass_point = PublicKey::from_secret_key(&pass_factor_key);
+    intermediate_code(password, &owner_entropy, has_lot_sequence)
+}
 
-    // Build intermediate code
-    let mut data = Vec::new();
-    data.extend_from_slice(&[0x2C, 0xE9, 0xB3, 0xE1, 0xFF, 0x39, 0xE2, 0x53]);
-    data.extend_from_slice(&owner_salt);
+fn intermediate_code(
+    password: &str,
+    owner_entropy: &[u8; 8],
+    has_lot_sequence: bool,
+) -> Result<String> {
+    let pass_factor = pass_factor(&normalize(password), owner_entropy, has_lot_sequence)?;
+    let pass_point = PublicKey::from_secret_key(&pass_factor);
+
+    let mut data = Vec::with_capacity(49);
+    data.extend_from_slice(if has_lot_sequence {
+        &BIP38_MAGIC_LOT
+    } else {
+        &BIP38_MAGIC_NO_LOT
+    });
+    data.extend_from_slice(owner_entropy);
     data.extend_from_slice(&pass_point.serialize());
 
     Ok(base58::encode_check(&data))
 }
 
 // Helper functions
+
+/// The EC-multiply passfactor. With lot/sequence numbers the scrypt output
+/// is a prefactor, hashed together with the owner entropy.
+fn pass_factor(
+    password: &str,
+    owner_entropy: &[u8; 8],
+    has_lot_sequence: bool,
+) -> Result<SecretKey> {
+    let owner_salt = if has_lot_sequence {
+        &owner_entropy[..4]
+    } else {
+        &owner_entropy[..]
+    };
+    let mut factor = [0u8; 32];
+    scrypt::scrypt(
+        password.as_bytes(),
+        owner_salt,
+        &scrypt::Params::new(14, SCRYPT_R, SCRYPT_P, 32).unwrap(),
+        &mut factor,
+    )
+    .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
+
+    if has_lot_sequence {
+        let mut pre_factor = [0u8; 40];
+        pre_factor[..32].copy_from_slice(&factor);
+        pre_factor[32..].copy_from_slice(owner_entropy);
+        factor = sha256d::Hash::hash(&pre_factor).to_byte_array();
+    }
+
+    SecretKey::from_secret_bytes(factor).map_err(|_| Error::KeyError("Invalid pass factor".into()))
+}
 
 /// The first four bytes of SHA256(SHA256(address)), for the key's address
 /// in its compression.

@@ -157,6 +157,35 @@ fn spec_vector_unicode_passphrase_is_nfc_normalized() {
     assert_eq!(base58::encode_check(&data), encrypted);
 }
 
+#[test_case(
+    "TestingOneTwoThree",
+    "passphrasepxFy57B9v8HtUsszJYKReoNDV6VHjUSGt8EVJmux9n1J3Ltf1gRxyDGXqnf9qm"
+    ; "no lot 1"
+)]
+#[test_case(
+    "Satoshi",
+    "passphraseoRDGAXTWzbp72eVbtUDdn1rwpgPUGjNZEc6CGBo8i5EC1FPW8wcnLdq4ThKzAS"
+    ; "no lot 2"
+)]
+#[test_case(
+    "MOLON LABE",
+    "passphraseaB8feaLQDENqCgr4gKZpmf4VoaT6qdjJNJiv7fsKvjqavcJxvuR1hy25aTu5sX"
+    ; "lot 1"
+)]
+#[test_case(
+    "\u{039C}\u{039F}\u{039B}\u{03A9}\u{039D} \u{039B}\u{0391}\u{0392}\u{0395}",
+    "passphrased3z9rQJHSyBkNBwTRPkUGNVEVrUAcfAXDyRU1V28ie6hNFbqDwbFBvsTK7yWVK"
+    ; "lot 2 greek"
+)]
+fn spec_vectors_intermediate_code(password: &str, code: &str) {
+    // The owner entropy is random, so it is taken from the vector; the rest
+    // must match.
+    let decoded = base58::decode_check(code).unwrap();
+    let has_lot_sequence = decoded[..8] == BIP38_MAGIC_LOT;
+    let owner_entropy: [u8; 8] = decoded[8..16].try_into().unwrap();
+    assert_eq!(intermediate_code(password, &owner_entropy, has_lot_sequence).unwrap(), code);
+}
+
 /// Non-EC-multiplied keys must set 0xC0; neither mode may set a bit the
 /// spec does not assign, and non-EC-multiplied keys have no lot/sequence.
 #[test_case(BIP38_PREFIX_NON_EC, 0xC0, true ; "non-ec")]
