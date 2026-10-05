@@ -120,14 +120,21 @@ impl Bip38EncryptedKey {
 
     fn decrypt_with(&self, password: &str, address: AddressFn) -> Result<SecretKey> {
         let password = &normalize(password);
-        match self.mode {
-            Bip38Mode::NonEcMultiply => self.decrypt_non_ec_multiply(password, address),
-            Bip38Mode::EcMultiply => self.decrypt_ec_multiply(password),
+        let secret = match self.mode {
+            Bip38Mode::NonEcMultiply => self.decrypt_non_ec_multiply(password)?,
+            Bip38Mode::EcMultiply => self.decrypt_ec_multiply(password)?,
+        };
+
+        // A wrong passphrase yields some other key, caught by the hash.
+        if address_hash(&secret, self.compressed, address) != self.data[3..7] {
+            return Err(Error::InvalidParameter("Invalid password".into()));
         }
+
+        Ok(secret)
     }
 
     /// Decrypt non-EC-multiply mode
-    fn decrypt_non_ec_multiply(&self, password: &str, address: AddressFn) -> Result<SecretKey> {
+    fn decrypt_non_ec_multiply(&self, password: &str) -> Result<SecretKey> {
         if self.data.len() != 39 {
             return Err(Error::InvalidParameter("Invalid encrypted key length".into()));
         }
@@ -160,15 +167,8 @@ impl Bip38EncryptedKey {
         }
 
         // Create secret key
-        let secret = SecretKey::from_secret_bytes(private_key)
-            .map_err(|_| Error::InvalidParameter("Invalid private key".into()))?;
-
-        // Verify by checking address hash
-        if self::address_hash(&secret, self.compressed, address) != address_hash {
-            return Err(Error::InvalidParameter("Invalid password".into()));
-        }
-
-        Ok(secret)
+        SecretKey::from_secret_bytes(private_key)
+            .map_err(|_| Error::InvalidParameter("Invalid private key".into()))
     }
 
     /// Decrypt EC-multiply mode
@@ -183,39 +183,39 @@ impl Bip38EncryptedKey {
         let address_hash = &self.data[3..7];
         let owner_entropy: [u8; 8] = self.data[7..15].try_into().expect("8 bytes");
 
-        let encrypted_part1 = &self.data[15..23];
+        let encrypted_part1_head = &self.data[15..23];
         let encrypted_part2 = &self.data[23..39];
 
         let pass_factor_key = pass_factor(password, &owner_entropy, has_lot_sequence)?;
-        let pass_point = PublicKey::from_secret_key(&pass_factor_key);
+        let pass_point = PublicKey::from_secret_key(&pass_factor_key).serialize();
 
-        // Derive encryption key from pass_point and address_hash
-        let mut derived_key = vec![0u8; SCRYPT_KEY_LEN];
-        let pass_point_bytes = if self.compressed {
-            pass_point.serialize().to_vec()
-        } else {
-            pass_point.serialize_uncompressed().to_vec()
-        };
-
+        let mut salt = [0u8; 12];
+        salt[..4].copy_from_slice(address_hash);
+        salt[4..].copy_from_slice(&owner_entropy);
+        let mut derived_key = [0u8; SCRYPT_KEY_LEN];
         scrypt::scrypt(
-            &pass_point_bytes,
-            address_hash,
+            &pass_point,
+            &salt,
             &scrypt::Params::new(10, 1, 1, SCRYPT_KEY_LEN).unwrap(),
             &mut derived_key,
         )
         .map_err(|_| Error::KeyError("Scrypt derivation failed".into()))?;
+        let (derived_half1, derived_half2) = derived_key.split_at(32);
 
-        // Decrypt seed
-        let derive_half2 = &derived_key[32..64];
-        let mut decrypted = Vec::new();
-        decrypted.extend_from_slice(&aes_decrypt(encrypted_part2, derive_half2)?);
-        decrypted.extend_from_slice(&aes_decrypt(
-            &[encrypted_part1, &decrypted[0..8]].concat(),
-            derive_half2,
-        )?);
+        // encryptedpart2 holds the tail of encryptedpart1 and of seedb.
+        let mut part2 = aes_decrypt_block(encrypted_part2, derived_half2);
+        xor_in_place(&mut part2, &derived_half1[16..]);
 
-        let seed_b = &decrypted[0..24];
-        let factor_b = sha256d::Hash::hash(seed_b).to_byte_array();
+        let mut encrypted_part1 = [0u8; 16];
+        encrypted_part1[..8].copy_from_slice(encrypted_part1_head);
+        encrypted_part1[8..].copy_from_slice(&part2[..8]);
+        let mut part1 = aes_decrypt_block(&encrypted_part1, derived_half2);
+        xor_in_place(&mut part1, &derived_half1[..16]);
+
+        let mut seed_b = [0u8; 24];
+        seed_b[..16].copy_from_slice(&part1);
+        seed_b[16..].copy_from_slice(&part2[8..]);
+        let factor_b = sha256d::Hash::hash(&seed_b).to_byte_array();
 
         // Multiply to get private key
         let factor_b_key = SecretKey::from_secret_bytes(factor_b)
@@ -395,6 +395,12 @@ fn normalize(password: &str) -> String {
     password.nfc().collect()
 }
 
+fn xor_in_place(data: &mut [u8], key: &[u8]) {
+    for (d, k) in data.iter_mut().zip(key) {
+        *d ^= k;
+    }
+}
+
 /// AES-256-ECB encryption
 #[allow(deprecated)]
 fn aes_encrypt(data: &[u8], key: &[u8]) -> Result<Vec<u8>> {
@@ -445,6 +451,17 @@ fn aes_decrypt(data: &[u8], key: &[u8]) -> Result<Vec<u8>> {
     decrypted.extend_from_slice(&block2);
 
     Ok(decrypted)
+}
+
+/// AES-256 on one 16-byte block, decrypting.
+#[allow(deprecated)]
+fn aes_decrypt_block(block: &[u8], key: &[u8]) -> [u8; 16] {
+    use aes::cipher::{generic_array::GenericArray, BlockDecrypt, KeyInit};
+    use aes::Aes256;
+
+    let mut block = GenericArray::clone_from_slice(block);
+    Aes256::new(GenericArray::from_slice(key)).decrypt_block(&mut block);
+    block.into()
 }
 
 impl fmt::Display for Bip38EncryptedKey {

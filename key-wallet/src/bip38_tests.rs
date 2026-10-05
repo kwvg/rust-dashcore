@@ -186,6 +186,37 @@ fn spec_vectors_intermediate_code(password: &str, code: &str) {
     assert_eq!(intermediate_code(password, &owner_entropy, has_lot_sequence).unwrap(), code);
 }
 
+#[test_case(
+    "TestingOneTwoThree",
+    "6PfQu77ygVyJLZjfvMLyhLMQbYnu5uguoJJ4kMCLqWwPEdfpwANVS76gTX",
+    hex!("A43A940577F4E97F5C4D39EB14FF083A98187C64EA7C99EF7CE460833959A519")
+    ; "no lot 1"
+)]
+#[test_case(
+    "Satoshi",
+    "6PfLGnQs6VZnrNpmVKfjotbnQuaJK4KZoPFrAjx1JMJUa1Ft8gnf5WxfKd",
+    hex!("C2C8036DF268F498099350718C4A3EF3984D2BE84618C2650F5171DCC5EB660A")
+    ; "no lot 2"
+)]
+#[test_case(
+    "MOLON LABE",
+    "6PgNBNNzDkKdhkT6uJntUXwwzQV8Rr2tZcbkDcuC9DZRsS6AtHts4Ypo1j",
+    hex!("44EA95AFBF138356A05EA32110DFD627232D0F2991AD221187BE356F19FA8190")
+    ; "lot 1"
+)]
+#[test_case(
+    "\u{039C}\u{039F}\u{039B}\u{03A9}\u{039D} \u{039B}\u{0391}\u{0392}\u{0395}",
+    "6PgGWtx25kUg8QWvwuJAgorN6k9FbE25rv5dMRwu5SKMnfpfVe5mar2ngH",
+    hex!("CA2759AA4ADB0F96C414F36ABEB8DB59342985BE9FA50FAAC228C8E7D90E3006")
+    ; "lot 2 greek"
+)]
+fn spec_vectors_ec_multiply(password: &str, encrypted: &str, secret: [u8; 32]) {
+    let key = Bip38EncryptedKey::from_base58(encrypted).unwrap();
+    assert_eq!(key.mode, Bip38Mode::EcMultiply);
+    assert_eq!(key.decrypt_with(password, &bitcoin_address).unwrap().to_secret_bytes(), secret);
+    assert!(key.decrypt_with("wrong", &bitcoin_address).is_err());
+}
+
 /// Non-EC-multiplied keys must set 0xC0; neither mode may set a bit the
 /// spec does not assign, and non-EC-multiplied keys have no lot/sequence.
 #[test_case(BIP38_PREFIX_NON_EC, 0xC0, true ; "non-ec")]
@@ -217,20 +248,15 @@ fn rejects_non_bip38(s: &str) {
     assert!(Bip38EncryptedKey::from_base58(s).is_err());
 }
 
+/// An EC-multiplied key from DashSync, hashed with a Dash address.
 #[test]
-#[ignore] // DashSync uses a different BIP38 format that's incompatible
-fn dashsync_vector() {
-    // Test vector from DashSync (Dash-specific)
-    let bip38_key = Bip38EncryptedKey::from_base58(
+fn dashsync_vector_ec_multiply() {
+    let key = Bip38EncryptedKey::from_base58(
         "6PfV898iMrVs3d9gJSw5HTYyGhQRR5xRu5ji4GE6H5QdebT2YgK14Lu1E5",
     )
-    .expect("Should parse Dash encrypted key");
-
-    let decrypted = bip38_key
-        .decrypt("TestingOneTwoThree")
-        .expect("Decryption should succeed with correct password");
-
-    // DashSync expects this to produce: 7sEJGJRPeGoNBsW8tKAk4JH52xbxrktPfJcNxEx3uf622ZrGR5k
-    // We can at least verify it decrypts successfully
-    assert_eq!(decrypted.to_secret_bytes().len(), 32);
+    .unwrap();
+    let expected =
+        dashcore::PrivateKey::from_wif("7sEJGJRPeGoNBsW8tKAk4JH52xbxrktPfJcNxEx3uf622ZrGR5k")
+            .unwrap();
+    assert_eq!(key.decrypt("TestingOneTwoThree").unwrap(), expected.inner);
 }
