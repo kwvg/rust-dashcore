@@ -58,6 +58,7 @@ async-trait = "0.1"
 criterion = "0.8.1"
 dashcore = { path="../dash", features = ["test-utils"] }
 hex = "0.4"
+hex_lit = "0.1.1"
 key-wallet = { path = ".", features = ["test-utils", "bip38", "serde", "bincode", "eddsa", "bls"] }
 rand = { version = "0.9", features = ["std", "std_rng", "thread_rng"] }
 test-case = "3.3"

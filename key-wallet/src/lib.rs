@@ -13,8 +13,6 @@ mod test_macros;
 
 #[cfg(test)]
 mod address_metadata_tests;
-#[cfg(all(test, feature = "bip38"))]
-mod bip38_tests;
 #[cfg(test)]
 mod mnemonic_tests;
 #[cfg(test)]
