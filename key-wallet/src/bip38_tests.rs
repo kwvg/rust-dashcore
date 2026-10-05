@@ -12,7 +12,6 @@ mod tests {
     // https://github.com/bitcoin/bips/blob/master/bip-0038.mediawiki
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_encryption_no_compression() {
         // Test vector: No compression, no EC multiply
         let private_key = SecretKey::from_secret_bytes([
@@ -46,7 +45,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_encryption_with_compression() {
         // Test vector: With compression
         let private_key = SecretKey::from_secret_bytes([
@@ -91,7 +89,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_wrong_password() {
         // Create an encrypted key
         let private_key = SecretKey::from_secret_bytes([
@@ -125,7 +122,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_scrypt_parameters() {
         // Test with different key material to verify scrypt parameters
         // BIP38 uses N=16384 (2^14), r=8, p=8
@@ -165,7 +161,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_unicode_password() {
         // Test with Unicode passwords
         let private_key = SecretKey::from_secret_bytes([0x42u8; 32]).unwrap();
@@ -191,7 +186,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_network_differences() {
         // Test that different networks produce different encrypted keys
         // (due to different address prefixes affecting the salt)
@@ -224,7 +218,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_edge_cases() {
         // Test edge cases
 
@@ -253,7 +246,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_round_trip() {
         // Test multiple round-trip encrypt/decrypt cycles
         use rand::Rng;
@@ -307,7 +299,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_invalid_prefix() {
         // Test with wrong prefix (not starting with 6P)
         // A regular WIF private key
@@ -317,7 +308,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BIP38 tests are slow - run with test_bip38.sh script"]
     fn test_bip38_performance() {
         // Test that encryption/decryption completes in reasonable time
         // BIP38 is intentionally slow (scrypt), but should complete within a few seconds
