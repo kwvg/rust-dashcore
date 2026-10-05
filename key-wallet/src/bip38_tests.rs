@@ -143,6 +143,20 @@ fn spec_vectors_non_ec_multiply(password: &str, encrypted: &str, secret: [u8; 32
     assert_eq!(base58::encode_check(&data), encrypted);
 }
 
+#[test]
+fn spec_vector_unicode_passphrase_is_nfc_normalized() {
+    // U+03D2 U+0301 normalizes to U+03D3 under NFC.
+    let password = "\u{03D2}\u{0301}\u{0000}\u{10400}\u{1F4A9}";
+    let encrypted = "6PRW5o9FLp4gJDDVqJQKJFTpMvdsSGJxMYHtHaQBF3ooa8mwD69bapcDQn";
+    let key = Bip38EncryptedKey::from_base58(encrypted).unwrap();
+    let secret = key.decrypt_with(password, &bitcoin_address).unwrap();
+    let public_key = dashcore::PublicKey::new_uncompressed(PublicKey::from_secret_key(&secret));
+    assert_eq!(bitcoin_address(&public_key), "16ktGzmfrurhbhi6JGqsMWf7TyqK9HNAeF");
+
+    let data = encrypt_with(&secret, password, false, &bitcoin_address).unwrap();
+    assert_eq!(base58::encode_check(&data), encrypted);
+}
+
 /// Non-EC-multiplied keys must set 0xC0; neither mode may set a bit the
 /// spec does not assign, and non-EC-multiplied keys have no lot/sequence.
 #[test_case(BIP38_PREFIX_NON_EC, 0xC0, true ; "non-ec")]

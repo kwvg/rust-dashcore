@@ -19,6 +19,7 @@ use dashcore::Address;
 
 use dashcore_hashes::{sha256d, Hash};
 use secp256k1::{PublicKey, SecretKey};
+use unicode_normalization::UnicodeNormalization;
 
 // BIP38 constants
 const BIP38_PREFIX_NON_EC: [u8; 2] = [0x01, 0x42];
@@ -115,6 +116,7 @@ impl Bip38EncryptedKey {
     }
 
     fn decrypt_with(&self, password: &str, address: AddressFn) -> Result<SecretKey> {
+        let password = &normalize(password);
         match self.mode {
             Bip38Mode::NonEcMultiply => self.decrypt_non_ec_multiply(password, address),
             Bip38Mode::EcMultiply => self.decrypt_ec_multiply(password),
@@ -292,6 +294,7 @@ fn encrypt_with(
     compressed: bool,
     address: AddressFn,
 ) -> Result<Vec<u8>> {
+    let password = &normalize(password);
     let address_hash = address_hash(private_key, compressed, address);
 
     // Derive encryption key using scrypt
@@ -339,6 +342,7 @@ pub fn generate_intermediate_code(
     lot: Option<u32>,
     sequence: Option<u32>,
 ) -> Result<String> {
+    let password = &normalize(password);
     use rand::Rng;
     let mut rng = rand::rng();
 
@@ -420,6 +424,11 @@ fn address_hash(secret: &SecretKey, compressed: bool, address: AddressFn) -> [u8
     };
     let hash = sha256d::Hash::hash(address(&public_key).as_bytes()).to_byte_array();
     hash[..4].try_into().expect("4 bytes")
+}
+
+/// The passphrase in Unicode Normalization Form C, as the spec requires.
+fn normalize(password: &str) -> String {
+    password.nfc().collect()
 }
 
 /// AES-256-ECB encryption
