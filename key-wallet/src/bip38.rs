@@ -27,7 +27,6 @@ const BIP38_PREFIX_EC: [u8; 2] = [0x01, 0x43];
 const BIP38_FLAG_NON_EC: u8 = 0xC0;
 const BIP38_FLAG_COMPRESSED: u8 = 0x20;
 const BIP38_FLAG_EC_LOT_SEQUENCE: u8 = 0x04;
-const _BIP38_FLAG_EC_INVALID: u8 = 0x10;
 
 // Scrypt parameters
 #[allow(dead_code)]
@@ -74,13 +73,19 @@ impl Bip38EncryptedKey {
 
         let prefix = [data[0], data[1]];
         let flag = data[2];
+        let compressed = (flag & BIP38_FLAG_COMPRESSED) != 0;
 
-        let (mode, compressed) = if prefix == BIP38_PREFIX_NON_EC {
-            let compressed = (flag & BIP38_FLAG_COMPRESSED) != 0;
-            (Bip38Mode::NonEcMultiply, compressed)
+        // Every bit the spec does not assign must be clear.
+        let mode = if prefix == BIP38_PREFIX_NON_EC {
+            if flag & !BIP38_FLAG_COMPRESSED != BIP38_FLAG_NON_EC {
+                return Err(Error::InvalidParameter("Invalid BIP38 flag byte".into()));
+            }
+            Bip38Mode::NonEcMultiply
         } else if prefix == BIP38_PREFIX_EC {
-            let compressed = (flag & BIP38_FLAG_COMPRESSED) != 0;
-            (Bip38Mode::EcMultiply, compressed)
+            if flag & !(BIP38_FLAG_COMPRESSED | BIP38_FLAG_EC_LOT_SEQUENCE) != 0 {
+                return Err(Error::InvalidParameter("Invalid BIP38 flag byte".into()));
+            }
+            Bip38Mode::EcMultiply
         } else {
             return Err(Error::InvalidParameter("Invalid BIP38 prefix".into()));
         };

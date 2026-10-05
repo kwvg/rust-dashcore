@@ -143,6 +143,25 @@ fn spec_vectors_non_ec_multiply(password: &str, encrypted: &str, secret: [u8; 32
     assert_eq!(base58::encode_check(&data), encrypted);
 }
 
+/// Non-EC-multiplied keys must set 0xC0; neither mode may set a bit the
+/// spec does not assign, and non-EC-multiplied keys have no lot/sequence.
+#[test_case(BIP38_PREFIX_NON_EC, 0xC0, true ; "non-ec")]
+#[test_case(BIP38_PREFIX_NON_EC, 0xE0, true ; "non-ec compressed")]
+#[test_case(BIP38_PREFIX_NON_EC, 0x00, false ; "non-ec without high bits")]
+#[test_case(BIP38_PREFIX_NON_EC, 0xC4, false ; "non-ec with lot sequence")]
+#[test_case(BIP38_PREFIX_NON_EC, 0xC8, false ; "non-ec reserved")]
+#[test_case(BIP38_PREFIX_EC, 0x24, true ; "ec compressed with lot sequence")]
+#[test_case(BIP38_PREFIX_EC, 0xC0, false ; "ec with high bits")]
+#[test_case(BIP38_PREFIX_EC, 0x10, false ; "ec reserved")]
+fn flag_byte(prefix: [u8; 2], flag: u8, valid: bool) {
+    let mut data =
+        base58::decode_check("6PRVWUbkzzsbcVac2qwfssoUJAN1Xhrg6bNk8J7Nzm5H7kxEbn2Nh2ZoGg").unwrap();
+    data[..2].copy_from_slice(&prefix);
+    data[2] = flag;
+    let encoded = base58::encode_check(&data);
+    assert_eq!(Bip38EncryptedKey::from_base58(&encoded).is_ok(), valid);
+}
+
 #[test]
 fn intermediate_code_generation() {
     assert!(!generate_intermediate_code("password", None, None).unwrap().is_empty());
