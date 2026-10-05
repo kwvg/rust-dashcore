@@ -152,7 +152,7 @@ impl Bip38EncryptedKey {
             .map_err(|_| Error::InvalidParameter("Invalid private key".into()))?;
 
         // Verify by checking address hash
-        if self::address_hash(&secret, address) != address_hash {
+        if self::address_hash(&secret, self.compressed, address) != address_hash {
             return Err(Error::InvalidParameter("Invalid password".into()));
         }
 
@@ -285,7 +285,7 @@ fn encrypt_with(
     compressed: bool,
     address: AddressFn,
 ) -> Result<Vec<u8>> {
-    let address_hash = address_hash(private_key, address);
+    let address_hash = address_hash(private_key, compressed, address);
 
     // Derive encryption key using scrypt
     let mut derived_key = vec![0u8; SCRYPT_KEY_LEN];
@@ -401,9 +401,13 @@ pub fn generate_intermediate_code(
 
 // Helper functions
 
-/// The first four bytes of SHA256(SHA256(address)), for the key's address.
-fn address_hash(secret: &SecretKey, address: AddressFn) -> [u8; 4] {
-    let public_key = dashcore::PublicKey::new(PublicKey::from_secret_key(secret));
+/// The first four bytes of SHA256(SHA256(address)), for the key's address
+/// in its compression.
+fn address_hash(secret: &SecretKey, compressed: bool, address: AddressFn) -> [u8; 4] {
+    let public_key = dashcore::PublicKey {
+        compressed,
+        inner: PublicKey::from_secret_key(secret),
+    };
     let hash = sha256d::Hash::hash(address(&public_key).as_bytes()).to_byte_array();
     hash[..4].try_into().expect("4 bytes")
 }

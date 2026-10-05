@@ -101,6 +101,44 @@ fn builder() {
     assert_eq!(encrypted.decrypt("TestPassword123").unwrap(), private_key);
 }
 
+/// The P2PKH encoding the BIP38 test vectors hash: Bitcoin's, version 0.
+fn bitcoin_address(pk: &dashcore::PublicKey) -> String {
+    let mut payload = vec![0u8];
+    payload.extend_from_slice(pk.pubkey_hash().as_byte_array());
+    base58::encode_check(&payload)
+}
+
+#[test_case(
+    "TestingOneTwoThree",
+    "6PRVWUbkzzsbcVac2qwfssoUJAN1Xhrg6bNk8J7Nzm5H7kxEbn2Nh2ZoGg",
+    hex!("CBF4B9F70470856BB4F40F80B87EDB90865997FFEE6DF315AB166D713AF433A5")
+    ; "uncompressed 1"
+)]
+#[test_case(
+    "Satoshi",
+    "6PRNFFkZc2NZ6dJqFfhRoFNMR9Lnyj7dYGrzdgXXVMXcxoKTePPX1dWByq",
+    hex!("09C2686880095B1A4C249EE3AC4EEA8A014F11E6F986D0B5025AC1F39AFBD9AE")
+    ; "uncompressed 2"
+)]
+#[test_case(
+    "TestingOneTwoThree",
+    "6PYNKZ1EAgYgmQfmNVamxyXVWHzK5s6DGhwP4J5o44cvXdoY7sRzhtpUeo",
+    hex!("CBF4B9F70470856BB4F40F80B87EDB90865997FFEE6DF315AB166D713AF433A5")
+    ; "compressed 1"
+)]
+#[test_case(
+    "Satoshi",
+    "6PYLtMnXvfG3oJde97zRyLYFZCYizPU5T3LwgdYJz1fRhh16bU7u6PPmY7",
+    hex!("09C2686880095B1A4C249EE3AC4EEA8A014F11E6F986D0B5025AC1F39AFBD9AE")
+    ; "compressed 2"
+)]
+fn spec_vectors_non_ec_multiply(password: &str, encrypted: &str, secret: [u8; 32]) {
+    let key = Bip38EncryptedKey::from_base58(encrypted).unwrap();
+    assert_eq!(key.mode, Bip38Mode::NonEcMultiply);
+    assert_eq!(key.decrypt_with(password, &bitcoin_address).unwrap().to_secret_bytes(), secret);
+    assert!(key.decrypt_with("wrong", &bitcoin_address).is_err());
+}
+
 #[test]
 fn intermediate_code_generation() {
     assert!(!generate_intermediate_code("password", None, None).unwrap().is_empty());
