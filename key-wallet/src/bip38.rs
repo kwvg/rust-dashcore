@@ -15,7 +15,7 @@ use core::fmt;
 
 use crate::error::{Error, Result};
 use crate::Network;
-use dashcore::Address;
+use dashcore::{Address, PrivateKey};
 
 use dashcore_hashes::{sha256d, Hash};
 use secp256k1::{PublicKey, SecretKey};
@@ -111,10 +111,15 @@ impl Bip38EncryptedKey {
         base58::encode_check(&self.data)
     }
 
-    /// Decrypt the key with a password
-    pub fn decrypt(&self, password: &str) -> Result<SecretKey> {
+    /// Decrypts the key with `password`, keeping its compression and network.
+    pub fn decrypt(&self, password: &str) -> Result<PrivateKey> {
         let network = self.network;
-        self.decrypt_with(password, &|pk| Address::p2pkh(pk, network).to_string())
+        let secret = self.decrypt_with(password, &|pk| Address::p2pkh(pk, network).to_string())?;
+        Ok(if self.compressed {
+            PrivateKey::new(secret, network)
+        } else {
+            PrivateKey::new_uncompressed(secret, network)
+        })
     }
 
     fn decrypt_with(&self, password: &str, address: AddressFn) -> Result<SecretKey> {
@@ -229,14 +234,12 @@ impl Bip38EncryptedKey {
     }
 }
 
-/// Encrypt a private key with a password (non-EC-multiply mode)
-pub fn encrypt_private_key(
-    private_key: &SecretKey,
-    password: &str,
-    compressed: bool,
-    network: Network,
-) -> Result<Bip38EncryptedKey> {
-    let data = encrypt_with(private_key, password, compressed, &|pk| {
+/// Encrypts `private_key` with `password` (non-EC-multiply mode), hashing
+/// the address in the key's own compression and network.
+pub fn encrypt_private_key(private_key: &PrivateKey, password: &str) -> Result<Bip38EncryptedKey> {
+    let network = private_key.network;
+    let compressed = private_key.compressed;
+    let data = encrypt_with(&private_key.inner, password, compressed, &|pk| {
         Address::p2pkh(pk, network).to_string()
     })?;
 
@@ -520,7 +523,12 @@ impl Bip38Builder {
         let password =
             self.password.as_ref().ok_or(Error::InvalidParameter("Password required".into()))?;
 
-        encrypt_private_key(private_key, password, self.compressed, self.network)
+        let private_key = if self.compressed {
+            PrivateKey::new(*private_key, self.network)
+        } else {
+            PrivateKey::new_uncompressed(*private_key, self.network)
+        };
+        encrypt_private_key(&private_key, password)
     }
 
     /// Generate an intermediate code for EC-multiply mode

@@ -4,6 +4,14 @@ use super::*;
 use hex_lit::hex;
 use test_case::test_case;
 
+fn private_key(secret: &SecretKey, compressed: bool, network: Network) -> PrivateKey {
+    if compressed {
+        PrivateKey::new(*secret, network)
+    } else {
+        PrivateKey::new_uncompressed(*secret, network)
+    }
+}
+
 /// Encrypting and decrypting gives the key back, through base58 too, in
 /// either compression; a wrong password does not.
 #[test_case(hex!("0C28FCA386C7A227600B2FE50B7CAE11EC86D3BF1FBE471BE89827E19D72AA1D"), "TestingOneTwoThree" ; "key 0c28")]
@@ -25,10 +33,10 @@ use test_case::test_case;
 #[test_case([0x99; 32], &"a".repeat(1000) ; "very long password")]
 #[test_case([0x99; 32], "!@#$%^&*()_+-=[]{}|;':\",./<>?`~" ; "special characters")]
 fn round_trip(key: [u8; 32], password: &str) {
-    let private_key = SecretKey::from_secret_bytes(key).unwrap();
+    let secret = SecretKey::from_secret_bytes(key).unwrap();
     for compressed in [true, false] {
-        let encrypted =
-            encrypt_private_key(&private_key, password, compressed, Network::Mainnet).unwrap();
+        let private_key = private_key(&secret, compressed, Network::Mainnet);
+        let encrypted = encrypt_private_key(&private_key, password).unwrap();
         assert_eq!(encrypted.compressed, compressed);
 
         let encoded = encrypted.to_base58();
@@ -51,15 +59,13 @@ fn round_trip_random() {
     for _ in 0..10 {
         let private_key = loop {
             if let Ok(key) = SecretKey::from_secret_bytes(rng.random()) {
-                break key;
+                break private_key(&key, rng.random_bool(0.5), Network::Mainnet);
             }
         };
         let len = rng.random_range(8..50);
         let password = Alphanumeric.sample_string(&mut rng, len);
-        let compressed = rng.random_bool(0.5);
 
-        let encrypted =
-            encrypt_private_key(&private_key, &password, compressed, Network::Mainnet).unwrap();
+        let encrypted = encrypt_private_key(&private_key, &password).unwrap();
         assert_eq!(encrypted.decrypt(&password).unwrap(), private_key);
     }
 }
@@ -67,12 +73,12 @@ fn round_trip_random() {
 /// The compression flag and the network each change the encrypted key.
 #[test]
 fn compression_and_network_change_the_encoding() {
-    let private_key = SecretKey::from_secret_bytes([0x77; 32]).unwrap();
+    let secret = SecretKey::from_secret_bytes([0x77; 32]).unwrap();
     let encodings =
         [(false, Network::Mainnet), (true, Network::Mainnet), (false, Network::Testnet)].map(
             |(compressed, network)| {
-                let encrypted =
-                    encrypt_private_key(&private_key, "NetworkTest", compressed, network).unwrap();
+                let private_key = private_key(&secret, compressed, network);
+                let encrypted = encrypt_private_key(&private_key, "NetworkTest").unwrap();
                 assert_eq!(encrypted.network, network);
                 assert_eq!(encrypted.decrypt("NetworkTest").unwrap(), private_key);
                 encrypted.to_base58()
@@ -85,9 +91,9 @@ fn compression_and_network_change_the_encoding() {
 /// The address hash binds a key to the network it was made for.
 #[test]
 fn decodes_for_the_given_network() {
-    let private_key = SecretKey::from_secret_bytes([0x42; 32]).unwrap();
-    let encoded =
-        encrypt_private_key(&private_key, "pass", true, Network::Testnet).unwrap().to_base58();
+    let private_key =
+        PrivateKey::new(SecretKey::from_secret_bytes([0x42; 32]).unwrap(), Network::Testnet);
+    let encoded = encrypt_private_key(&private_key, "pass").unwrap().to_base58();
 
     let on_testnet = Bip38EncryptedKey::from_base58(&encoded, Network::Testnet).unwrap();
     assert_eq!(on_testnet.decrypt("pass").unwrap(), private_key);
@@ -97,7 +103,7 @@ fn decodes_for_the_given_network() {
 
 #[test]
 fn builder() {
-    let private_key = SecretKey::from_secret_bytes(hex!(
+    let secret = SecretKey::from_secret_bytes(hex!(
         "0C28FCA386C7A227600B2FE50B7CAE11EC86D3BF1FBE471BE89827E19D72AA1D"
     ))
     .unwrap();
@@ -106,12 +112,15 @@ fn builder() {
         .password("TestPassword123".to_string())
         .compressed(true)
         .network(Network::Testnet)
-        .encrypt(&private_key)
+        .encrypt(&secret)
         .unwrap();
 
     assert!(encrypted.compressed);
     assert_eq!(encrypted.network, Network::Testnet);
-    assert_eq!(encrypted.decrypt("TestPassword123").unwrap(), private_key);
+    assert_eq!(
+        encrypted.decrypt("TestPassword123").unwrap(),
+        PrivateKey::new(secret, Network::Testnet)
+    );
 }
 
 /// The P2PKH encoding the BIP38 test vectors hash: Bitcoin's, version 0.
@@ -269,8 +278,8 @@ fn dashsync_vector_ec_multiply() {
         Network::Mainnet,
     )
     .unwrap();
-    let expected =
-        dashcore::PrivateKey::from_wif("7sEJGJRPeGoNBsW8tKAk4JH52xbxrktPfJcNxEx3uf622ZrGR5k")
-            .unwrap();
-    assert_eq!(key.decrypt("TestingOneTwoThree").unwrap(), expected.inner);
+    assert_eq!(
+        key.decrypt("TestingOneTwoThree").unwrap().to_wif(),
+        "7sEJGJRPeGoNBsW8tKAk4JH52xbxrktPfJcNxEx3uf622ZrGR5k"
+    );
 }

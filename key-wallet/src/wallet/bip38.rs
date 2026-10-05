@@ -25,9 +25,10 @@ impl Wallet {
         }
 
         let root_key = self.root_extended_priv_key()?;
-        let secret_key = root_key.root_private_key;
-
-        encrypt_private_key(&secret_key, password, true, network)
+        encrypt_private_key(
+            &dashcore::PrivateKey::new(root_key.root_private_key, network),
+            password,
+        )
     }
 
     /// Export an account's private key as BIP38 encrypted
@@ -70,8 +71,10 @@ impl Wallet {
         let derivation_path = account.account_type.derivation_path(self.network)?;
         let account_key = master_key.derive_priv(&derivation_path).map_err(Error::Bip32)?;
 
-        let secret_key = account_key.private_key;
-        encrypt_private_key(&secret_key, password, true, self.network)
+        encrypt_private_key(
+            &dashcore::PrivateKey::new(account_key.private_key, self.network),
+            password,
+        )
     }
 
     /// Import a BIP38 encrypted private key
@@ -81,11 +84,11 @@ impl Wallet {
         password: &str,
     ) -> Result<()> {
         // Decrypt the key
-        let secret_key = encrypted_key.decrypt(password)?;
+        let private_key = encrypted_key.decrypt(password)?;
 
         // Create a new account with this key
         // Note: This is a simplified implementation - in production you'd want more options
-        let private_bytes = secret_key.to_secret_bytes();
+        let private_bytes = private_key.inner.to_secret_bytes();
         let mut extended_key_bytes = Vec::new();
         extended_key_bytes.extend_from_slice(&[0; 32]); // chain code (zeros for imported keys)
         extended_key_bytes.extend_from_slice(&private_bytes);
