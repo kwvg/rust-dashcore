@@ -34,6 +34,10 @@ const SCRYPT_R: u32 = 8;
 const SCRYPT_P: u32 = 8;
 const SCRYPT_KEY_LEN: usize = 64;
 
+/// Renders a public key as the address string BIP38 hashes. Dash uses its
+/// own P2PKH encoding, which is how the spec has alt-chains tell keys apart.
+type AddressFn<'a> = &'a dyn Fn(&dashcore::PublicKey) -> String;
+
 /// BIP38 encryption mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bip38Mode {
@@ -99,14 +103,19 @@ impl Bip38EncryptedKey {
 
     /// Decrypt the key with a password
     pub fn decrypt(&self, password: &str) -> Result<SecretKey> {
+        let network = self.network;
+        self.decrypt_with(password, &|pk| Address::p2pkh(pk, network).to_string())
+    }
+
+    fn decrypt_with(&self, password: &str, address: AddressFn) -> Result<SecretKey> {
         match self.mode {
-            Bip38Mode::NonEcMultiply => self.decrypt_non_ec_multiply(password),
+            Bip38Mode::NonEcMultiply => self.decrypt_non_ec_multiply(password, address),
             Bip38Mode::EcMultiply => self.decrypt_ec_multiply(password),
         }
     }
 
     /// Decrypt non-EC-multiply mode
-    fn decrypt_non_ec_multiply(&self, password: &str) -> Result<SecretKey> {
+    fn decrypt_non_ec_multiply(&self, password: &str, address: AddressFn) -> Result<SecretKey> {
         if self.data.len() != 39 {
             return Err(Error::InvalidParameter("Invalid encrypted key length".into()));
         }
@@ -143,10 +152,7 @@ impl Bip38EncryptedKey {
             .map_err(|_| Error::InvalidParameter("Invalid private key".into()))?;
 
         // Verify by checking address hash
-        let address = self.derive_address(&secret)?;
-        let computed_hash = address_hash_from_address(&address);
-
-        if &computed_hash[0..4] != address_hash {
+        if self::address_hash(&secret, address) != address_hash {
             return Err(Error::InvalidParameter("Invalid password".into()));
         }
 
@@ -252,13 +258,6 @@ impl Bip38EncryptedKey {
 
         Ok(private_key)
     }
-
-    /// Derive address from secret key
-    fn derive_address(&self, secret: &SecretKey) -> Result<Address> {
-        let public_key = PublicKey::from_secret_key(secret);
-        let dash_pubkey = dashcore::PublicKey::new(public_key);
-        Ok(Address::p2pkh(&dash_pubkey, self.network))
-    }
 }
 
 /// Encrypt a private key with a password (non-EC-multiply mode)
@@ -268,10 +267,25 @@ pub fn encrypt_private_key(
     compressed: bool,
     network: Network,
 ) -> Result<Bip38EncryptedKey> {
-    let public_key = PublicKey::from_secret_key(private_key);
-    let dash_pubkey = dashcore::PublicKey::new(public_key);
-    let address = Address::p2pkh(&dash_pubkey, network);
-    let address_hash = address_hash_from_address(&address);
+    let data = encrypt_with(private_key, password, compressed, &|pk| {
+        Address::p2pkh(pk, network).to_string()
+    })?;
+
+    Ok(Bip38EncryptedKey {
+        data,
+        mode: Bip38Mode::NonEcMultiply,
+        compressed,
+        network,
+    })
+}
+
+fn encrypt_with(
+    private_key: &SecretKey,
+    password: &str,
+    compressed: bool,
+    address: AddressFn,
+) -> Result<Vec<u8>> {
+    let address_hash = address_hash(private_key, address);
 
     // Derive encryption key using scrypt
     let mut derived_key = vec![0u8; SCRYPT_KEY_LEN];
@@ -306,13 +320,7 @@ pub fn encrypt_private_key(
     });
     data.extend_from_slice(&address_hash[0..4]);
     data.extend_from_slice(&encrypted);
-
-    Ok(Bip38EncryptedKey {
-        data,
-        mode: Bip38Mode::NonEcMultiply,
-        compressed,
-        network,
-    })
+    Ok(data)
 }
 
 /// Generate an intermediate code for EC-multiply mode
@@ -393,13 +401,11 @@ pub fn generate_intermediate_code(
 
 // Helper functions
 
-/// Compute address hash for BIP38
-fn address_hash_from_address(address: &Address) -> [u8; 4] {
-    let address_str = address.to_string();
-    let hash = sha256d::Hash::hash(address_str.as_bytes());
-    let mut result = [0u8; 4];
-    result.copy_from_slice(&hash[0..4]);
-    result
+/// The first four bytes of SHA256(SHA256(address)), for the key's address.
+fn address_hash(secret: &SecretKey, address: AddressFn) -> [u8; 4] {
+    let public_key = dashcore::PublicKey::new(PublicKey::from_secret_key(secret));
+    let hash = sha256d::Hash::hash(address(&public_key).as_bytes()).to_byte_array();
+    hash[..4].try_into().expect("4 bytes")
 }
 
 /// AES-256-ECB encryption
