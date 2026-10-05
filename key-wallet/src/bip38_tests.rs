@@ -135,8 +135,12 @@ fn bitcoin_address(pk: &dashcore::PublicKey) -> String {
 fn spec_vectors_non_ec_multiply(password: &str, encrypted: &str, secret: [u8; 32]) {
     let key = Bip38EncryptedKey::from_base58(encrypted).unwrap();
     assert_eq!(key.mode, Bip38Mode::NonEcMultiply);
-    assert_eq!(key.decrypt_with(password, &bitcoin_address).unwrap().to_secret_bytes(), secret);
+    let decrypted = key.decrypt_with(password, &bitcoin_address).unwrap();
+    assert_eq!(decrypted.to_secret_bytes(), secret);
     assert!(key.decrypt_with("wrong", &bitcoin_address).is_err());
+
+    let data = encrypt_with(&decrypted, password, key.compressed, &bitcoin_address).unwrap();
+    assert_eq!(base58::encode_check(&data), encrypted);
 }
 
 #[test]

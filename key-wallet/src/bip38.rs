@@ -23,6 +23,8 @@ use secp256k1::{PublicKey, SecretKey};
 // BIP38 constants
 const BIP38_PREFIX_NON_EC: [u8; 2] = [0x01, 0x42];
 const BIP38_PREFIX_EC: [u8; 2] = [0x01, 0x43];
+/// The two high bits every non-EC-multiplied flag byte carries.
+const BIP38_FLAG_NON_EC: u8 = 0xC0;
 const BIP38_FLAG_COMPRESSED: u8 = 0x20;
 const BIP38_FLAG_EC_LOT_SEQUENCE: u8 = 0x04;
 const _BIP38_FLAG_EC_INVALID: u8 = 0x10;
@@ -313,11 +315,14 @@ fn encrypt_with(
     // Build the final encrypted key
     let mut data = Vec::new();
     data.extend_from_slice(&BIP38_PREFIX_NON_EC);
-    data.push(if compressed {
-        BIP38_FLAG_COMPRESSED
-    } else {
-        0x00
-    });
+    data.push(
+        BIP38_FLAG_NON_EC
+            | if compressed {
+                BIP38_FLAG_COMPRESSED
+            } else {
+                0
+            },
+    );
     data.extend_from_slice(&address_hash[0..4]);
     data.extend_from_slice(&encrypted);
     Ok(data)
