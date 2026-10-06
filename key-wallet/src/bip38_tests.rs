@@ -33,7 +33,7 @@ fn round_trip(key: [u8; 32], password: &str) {
 
         let encoded = encrypted.to_base58();
         assert!(encoded.starts_with('6'), "{encoded}");
-        let parsed = Bip38EncryptedKey::from_base58(&encoded).unwrap();
+        let parsed = Bip38EncryptedKey::from_base58(&encoded, Network::Mainnet).unwrap();
         assert_eq!(parsed, encrypted);
 
         assert_eq!(parsed.decrypt(password).unwrap(), private_key);
@@ -80,6 +80,19 @@ fn compression_and_network_change_the_encoding() {
         );
     assert_ne!(encodings[0], encodings[1]);
     assert_ne!(encodings[0], encodings[2]);
+}
+
+/// The address hash binds a key to the network it was made for.
+#[test]
+fn decodes_for_the_given_network() {
+    let private_key = SecretKey::from_secret_bytes([0x42; 32]).unwrap();
+    let encoded =
+        encrypt_private_key(&private_key, "pass", true, Network::Testnet).unwrap().to_base58();
+
+    let on_testnet = Bip38EncryptedKey::from_base58(&encoded, Network::Testnet).unwrap();
+    assert_eq!(on_testnet.decrypt("pass").unwrap(), private_key);
+    let on_mainnet = Bip38EncryptedKey::from_base58(&encoded, Network::Mainnet).unwrap();
+    assert!(on_mainnet.decrypt("pass").is_err());
 }
 
 #[test]
@@ -133,7 +146,7 @@ fn bitcoin_address(pk: &dashcore::PublicKey) -> String {
     ; "compressed 2"
 )]
 fn spec_vectors_non_ec_multiply(password: &str, encrypted: &str, secret: [u8; 32]) {
-    let key = Bip38EncryptedKey::from_base58(encrypted).unwrap();
+    let key = Bip38EncryptedKey::from_base58(encrypted, Network::Mainnet).unwrap();
     assert_eq!(key.mode, Bip38Mode::NonEcMultiply);
     let decrypted = key.decrypt_with(password, &bitcoin_address).unwrap();
     assert_eq!(decrypted.to_secret_bytes(), secret);
@@ -148,7 +161,7 @@ fn spec_vector_unicode_passphrase_is_nfc_normalized() {
     // U+03D2 U+0301 normalizes to U+03D3 under NFC.
     let password = "\u{03D2}\u{0301}\u{0000}\u{10400}\u{1F4A9}";
     let encrypted = "6PRW5o9FLp4gJDDVqJQKJFTpMvdsSGJxMYHtHaQBF3ooa8mwD69bapcDQn";
-    let key = Bip38EncryptedKey::from_base58(encrypted).unwrap();
+    let key = Bip38EncryptedKey::from_base58(encrypted, Network::Mainnet).unwrap();
     let secret = key.decrypt_with(password, &bitcoin_address).unwrap();
     let public_key = dashcore::PublicKey::new_uncompressed(PublicKey::from_secret_key(&secret));
     assert_eq!(bitcoin_address(&public_key), "16ktGzmfrurhbhi6JGqsMWf7TyqK9HNAeF");
@@ -211,7 +224,7 @@ fn spec_vectors_intermediate_code(password: &str, code: &str) {
     ; "lot 2 greek"
 )]
 fn spec_vectors_ec_multiply(password: &str, encrypted: &str, secret: [u8; 32]) {
-    let key = Bip38EncryptedKey::from_base58(encrypted).unwrap();
+    let key = Bip38EncryptedKey::from_base58(encrypted, Network::Mainnet).unwrap();
     assert_eq!(key.mode, Bip38Mode::EcMultiply);
     assert_eq!(key.decrypt_with(password, &bitcoin_address).unwrap().to_secret_bytes(), secret);
     assert!(key.decrypt_with("wrong", &bitcoin_address).is_err());
@@ -233,7 +246,7 @@ fn flag_byte(prefix: [u8; 2], flag: u8, valid: bool) {
     data[..2].copy_from_slice(&prefix);
     data[2] = flag;
     let encoded = base58::encode_check(&data);
-    assert_eq!(Bip38EncryptedKey::from_base58(&encoded).is_ok(), valid);
+    assert_eq!(Bip38EncryptedKey::from_base58(&encoded, Network::Mainnet).is_ok(), valid);
 }
 
 #[test]
@@ -245,7 +258,7 @@ fn intermediate_code_generation() {
 #[test_case("InvalidBase58String!!!" ; "invalid base58")]
 #[test_case("5KN7MzqK5wt2TP1fQCYyHBtDrXdJuXbUzm4A9rKAteGu3Qi5CVR" ; "wif")]
 fn rejects_non_bip38(s: &str) {
-    assert!(Bip38EncryptedKey::from_base58(s).is_err());
+    assert!(Bip38EncryptedKey::from_base58(s, Network::Mainnet).is_err());
 }
 
 /// An EC-multiplied key from DashSync, hashed with a Dash address.
@@ -253,6 +266,7 @@ fn rejects_non_bip38(s: &str) {
 fn dashsync_vector_ec_multiply() {
     let key = Bip38EncryptedKey::from_base58(
         "6PfV898iMrVs3d9gJSw5HTYyGhQRR5xRu5ji4GE6H5QdebT2YgK14Lu1E5",
+        Network::Mainnet,
     )
     .unwrap();
     let expected =

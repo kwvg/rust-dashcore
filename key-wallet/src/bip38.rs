@@ -61,13 +61,17 @@ pub struct Bip38EncryptedKey {
     mode: Bip38Mode,
     /// Whether the key is compressed
     compressed: bool,
-    /// Network (derived from address)
+    /// The network whose address the key hashes
     network: Network,
 }
 
 impl Bip38EncryptedKey {
-    /// Create from a base58-encoded BIP38 string
-    pub fn from_base58(s: &str) -> Result<Self> {
+    /// Parses a base58-encoded BIP38 key for `network`.
+    ///
+    /// The address hash inside the key depends on the network's address
+    /// encoding, so decryption only succeeds under the network it was made
+    /// for.
+    pub fn from_base58(s: &str, network: Network) -> Result<Self> {
         let data = base58::decode_check(s)
             .map_err(|_| Error::InvalidParameter("Invalid base58 encoding".into()))?;
 
@@ -93,11 +97,6 @@ impl Bip38EncryptedKey {
         } else {
             return Err(Error::InvalidParameter("Invalid BIP38 prefix".into()));
         };
-
-        // Try to determine network from address hash
-        // In BIP38, bytes 3-6 are the address hash
-        // We'll default to mainnet for now
-        let network = Network::Mainnet;
 
         Ok(Self {
             data,
