@@ -18,9 +18,9 @@ use dash_pkc::bls::{
     BlsPublicKey as PkcPublicKey, BlsScChia, BlsScIetf, BlsScheme as PkcScheme,
     BlsSecretKey as PkcSecretKey, BlsSignature as PkcSignature, Fr,
 };
-use dash_types::{make_bytes, make_sbytes};
+use dash_types::make_sbytes;
 use hex_conservative::{DecodeFixedLengthBytesError, DisplayHex};
-use internals::impl_array_newtype;
+use internals::{impl_array_newtype, impl_bytes_newtype};
 #[cfg(feature = "serde")]
 use internals::{serde_string_deserialize_impl, serde_string_serialize_impl};
 #[cfg(feature = "bls")]
@@ -336,12 +336,26 @@ impl BlsSecretKey<'_> {
     }
 }
 
-make_bytes! {
-    /// BLS signature (96 bytes, unvalidated).
-    BlsSigBytes, BLS_SIG_LEN
+/// BLS signature (96 bytes, unvalidated).
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+pub struct BlsSigBytes([u8; BLS_SIG_LEN]);
+
+impl_array_newtype!(BlsSigBytes, u8, BLS_SIG_LEN);
+impl_bytes_newtype!(BlsSigBytes, BLS_SIG_LEN);
+
+impl Default for BlsSigBytes {
+    fn default() -> Self {
+        Self([0; BLS_SIG_LEN])
+    }
 }
 
 impl BlsSigBytes {
+    /// Wraps raw bytes without validation.
+    pub const fn from_bytes(bytes: [u8; BLS_SIG_LEN]) -> Self {
+        Self(bytes)
+    }
+
     /// Pairs these bytes with `scheme`.
     #[cfg(feature = "bls")]
     pub fn as_scheme(self, scheme: BlsScheme) -> BlsSignature {
@@ -358,35 +372,7 @@ impl BlsSigBytes {
 
     /// Returns `true` when every byte is zero.
     pub fn is_zeroed(&self) -> bool {
-        self.is_null()
-    }
-}
-
-#[cfg(feature = "bincode")]
-impl bincode::Encode for BlsSigBytes {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        bincode::Encode::encode(self.as_bytes(), encoder)
-    }
-}
-
-#[cfg(feature = "bincode")]
-impl<C> bincode::Decode<C> for BlsSigBytes {
-    fn decode<D: bincode::de::Decoder<Context = C>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        <[u8; BLS_SIG_LEN] as bincode::Decode<C>>::decode(decoder).map(Self::from_bytes)
-    }
-}
-
-#[cfg(feature = "bincode")]
-impl<'de, C> bincode::BorrowDecode<'de, C> for BlsSigBytes {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = C>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        <Self as bincode::Decode<C>>::decode(decoder)
+        self.0 == [0; BLS_SIG_LEN]
     }
 }
 
@@ -474,8 +460,8 @@ mod tests {
     const QUORUM_PUBKEY: [u8; 48] = hex!("880d92cdfdcb2def08ee224b036dac1c52d39443c82576bfa2b9fe215265bffa129b936653bc655c3668d73c977d2e5a");
 
     /// ChainLock signature from height 2301027.
-    #[cfg(feature = "bls")]
     const CHAINLOCK_SIG: [u8; 96] = hex!("ad47488b86dc296b4cc582afe99e7e32489e0f7840e40ebfb4ea959481caf757575f7a7e9c388c21b16d7c9979d4906d000fe14851dbc42e89802bab0932ac40b8cbad2076da9365e1587d53d1dec3f25a776c2fe0de2fca87e9c03408809181");
+    const SIG_HEX: &str = "ad47488b86dc296b4cc582afe99e7e32489e0f7840e40ebfb4ea959481caf757575f7a7e9c388c21b16d7c9979d4906d000fe14851dbc42e89802bab0932ac40b8cbad2076da9365e1587d53d1dec3f25a776c2fe0de2fca87e9c03408809181";
 
     /// The block ChainLock at height 2301027 covers.
     #[cfg(feature = "bls")]
@@ -533,6 +519,53 @@ mod tests {
     impl serde::Serialize for Bytes<'_> {
         fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
             s.serialize_bytes(self.0)
+        }
+    }
+
+    #[cfg(feature = "bincode")]
+    #[test]
+    fn sig_bincode_layout_is_raw() {
+        let config = bincode::config::standard();
+        let sig = BlsSigBytes::from(CHAINLOCK_SIG);
+        let bytes = bincode::encode_to_vec(sig, config).unwrap();
+
+        assert_eq!(bytes, CHAINLOCK_SIG);
+        assert_eq!(bincode::decode_from_slice(&bytes, config).unwrap(), (sig, 96));
+    }
+
+    #[test]
+    fn sig_fmt_is_integral_hex() {
+        let sig = BlsSigBytes::from(CHAINLOCK_SIG);
+
+        assert_eq!(sig.to_string(), SIG_HEX);
+        assert_eq!(format!("{sig:?}"), SIG_HEX);
+        assert_eq!(format!("{sig:#}"), format!("0x{SIG_HEX}"));
+        assert_eq!(format!("{sig:>200}"), format!("{:>200}", SIG_HEX));
+        assert_eq!(format!("{sig:.4}"), SIG_HEX);
+        assert_eq!(format!("{sig:X}"), SIG_HEX.to_uppercase());
+        assert_eq!(SIG_HEX.to_uppercase().parse::<BlsSigBytes>().unwrap(), sig);
+        assert!(SIG_HEX[2..].parse::<BlsSigBytes>().is_err());
+        assert!(format!("0x{SIG_HEX}").parse::<BlsSigBytes>().is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn sig_serde_layout_is_hex_or_bytes() {
+        let sig = BlsSigBytes::from(CHAINLOCK_SIG);
+
+        assert_eq!(serde_json::to_string(&sig).unwrap(), format!("\"{SIG_HEX}\""));
+        assert_eq!(serde_json::from_str::<BlsSigBytes>(&format!("\"{SIG_HEX}\"")).unwrap(), sig);
+        assert!(serde_json::from_str::<BlsSigBytes>(&format!("{:?}", CHAINLOCK_SIG)).is_err());
+
+        #[cfg(feature = "bincode")]
+        {
+            let config = bincode::config::standard();
+            let bytes = bincode::serde::encode_to_vec(sig, config).unwrap();
+            let hex = bincode::serde::encode_to_vec(SIG_HEX, config).unwrap();
+
+            assert_eq!(bytes, [&[96], &CHAINLOCK_SIG[..]].concat());
+            assert_eq!(bincode::serde::decode_from_slice(&bytes, config).unwrap(), (sig, 97));
+            assert!(bincode::serde::decode_from_slice::<BlsSigBytes, _>(&hex, config).is_err());
         }
     }
 
