@@ -860,10 +860,10 @@ impl fmt::Display for DisplayUnchecked<'_> {
 }
 
 #[cfg(feature = "serde")]
-crate::serde_utils::serde_string_serialize_impl!(Address, "a Dash address");
+internals::serde_string_serialize_impl!(Address, "a Dash address");
 
 #[cfg(feature = "serde")]
-crate::serde_utils::serde_string_deserialize_impl!(Address<NetworkUnchecked>, "a Dash address");
+internals::serde_string_deserialize_impl!(Address<NetworkUnchecked>, "a Dash address");
 
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Address<NetworkChecked> {
