@@ -6,6 +6,11 @@
 
 //! BLS12-381 public key and signatures.
 
+use core::fmt;
+use core::str::FromStr;
+
+#[cfg(feature = "bincode")]
+use bincode_derive::{Decode, Encode};
 #[cfg(feature = "bls")]
 use dash_pkc::__deps::ff::PrimeField;
 #[cfg(feature = "bls")]
@@ -14,9 +19,10 @@ use dash_pkc::bls::{
     BlsSecretKey as PkcSecretKey, BlsSignature as PkcSignature, Fr,
 };
 use dash_types::{make_bytes, make_sbytes};
-use hex_conservative::DecodeFixedLengthBytesError;
-#[cfg(feature = "bls")]
-use hex_conservative::DisplayHex;
+use hex_conservative::{DecodeFixedLengthBytesError, DisplayHex};
+use internals::impl_array_newtype;
+#[cfg(feature = "serde")]
+use internals::{serde_string_deserialize_impl, serde_string_serialize_impl};
 #[cfg(feature = "bls")]
 use thiserror::Error as ThisError;
 #[cfg(feature = "bls")]
@@ -79,12 +85,29 @@ fn reduce(bytes: &[u8; BLS_SK_LEN]) -> Result<[u8; BLS_SK_LEN], BlsError> {
     Ok(out)
 }
 
-make_bytes! {
-    /// BLS public key (48 bytes, unvalidated).
-    BlsPkBytes, BLS_PK_LEN
-}
+/// BLS public key (48 bytes, unvalidated).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "bincode", derive(Encode, Decode))]
+pub struct BlsPkBytes([u8; BLS_PK_LEN]);
+
+impl_array_newtype!(BlsPkBytes, u8, BLS_PK_LEN);
 
 impl BlsPkBytes {
+    /// Wraps raw bytes without validation.
+    pub const fn from_bytes(bytes: [u8; BLS_PK_LEN]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrows the inner byte array.
+    pub const fn as_bytes(&self) -> &[u8; BLS_PK_LEN] {
+        &self.0
+    }
+
+    /// Copies out the inner byte array.
+    pub const fn to_bytes(&self) -> [u8; BLS_PK_LEN] {
+        self.0
+    }
+
     /// Pairs these bytes with `scheme`.
     #[cfg(feature = "bls")]
     pub fn as_scheme(self, scheme: BlsScheme) -> BlsPublicKey {
@@ -101,37 +124,34 @@ impl BlsPkBytes {
 
     /// Returns `true` when every byte is zero.
     pub fn is_zeroed(&self) -> bool {
-        self.is_null()
+        self.0 == [0; BLS_PK_LEN]
     }
 }
 
-#[cfg(feature = "bincode")]
-impl bincode::Encode for BlsPkBytes {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        bincode::Encode::encode(self.as_bytes(), encoder)
+impl Default for BlsPkBytes {
+    fn default() -> Self {
+        Self([0; BLS_PK_LEN])
     }
 }
 
-#[cfg(feature = "bincode")]
-impl<C> bincode::Decode<C> for BlsPkBytes {
-    fn decode<D: bincode::de::Decoder<Context = C>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        <[u8; BLS_PK_LEN] as bincode::Decode<C>>::decode(decoder).map(Self::from_bytes)
+impl fmt::Display for BlsPkBytes {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0.as_hex())
     }
 }
 
-#[cfg(feature = "bincode")]
-impl<'de, C> bincode::BorrowDecode<'de, C> for BlsPkBytes {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = C>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        <Self as bincode::Decode<C>>::decode(decoder)
+impl FromStr for BlsPkBytes {
+    type Err = DecodeFixedLengthBytesError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_hex(s)
     }
 }
+
+#[cfg(feature = "serde")]
+serde_string_serialize_impl!(BlsPkBytes, "a BLS public key");
+#[cfg(feature = "serde")]
+serde_string_deserialize_impl!(BlsPkBytes, "a BLS public key");
 
 /// A [`BlsPkBytes`] paired with the scheme to read it under.
 #[cfg(feature = "bls")]
@@ -435,9 +455,11 @@ impl BlsSignature {
     }
 }
 
-#[cfg(all(test, feature = "bls"))]
+#[cfg(test)]
 mod tests {
     use hex_conservative::hex;
+
+    use super::*;
 
     /// Operator public keys from the mainnet quorum at height 2300832.
     const OPERATOR_KEYS: [[u8; 48]; 3] = [
@@ -445,18 +467,76 @@ mod tests {
         hex!("8b02bec7d70bb6c386ef4e201f3c01d062902079920cb037d7257110f9b6112ecad30cf20daf373813a816b0df845cfa"),
         hex!("8455cd00d19792377ac915614b06cc46f161662aaab1d5f1e73f3c3cac48a1f2991d75ba14decb308294ceaf7185ef21"),
     ];
+    const PK_HEX: &str = "86e7ea34cc084da3ed0e90649ad444df0ca25d638164a596b4fbec9567bbcf3e635a8d8457107e7fe76326f3816e34d9";
 
     /// Quorum public key for the ChainLock at height 2301027.
+    #[cfg(feature = "bls")]
     const QUORUM_PUBKEY: [u8; 48] = hex!("880d92cdfdcb2def08ee224b036dac1c52d39443c82576bfa2b9fe215265bffa129b936653bc655c3668d73c977d2e5a");
 
     /// ChainLock signature from height 2301027.
+    #[cfg(feature = "bls")]
     const CHAINLOCK_SIG: [u8; 96] = hex!("ad47488b86dc296b4cc582afe99e7e32489e0f7840e40ebfb4ea959481caf757575f7a7e9c388c21b16d7c9979d4906d000fe14851dbc42e89802bab0932ac40b8cbad2076da9365e1587d53d1dec3f25a776c2fe0de2fca87e9c03408809181");
 
     /// The block ChainLock at height 2301027 covers.
+    #[cfg(feature = "bls")]
     const CHAINLOCK_BLOCK_HASH: [u8; 32] =
         hex!("00000000000000029eabbaa19ca5f694b863b3f64a682c376fa50b4119ae0029");
 
-    #[cfg(test)]
+    #[cfg(feature = "bincode")]
+    #[test]
+    fn pk_bincode_layout_is_raw() {
+        let config = bincode::config::standard();
+        let pk = BlsPkBytes::from(OPERATOR_KEYS[0]);
+        let bytes = bincode::encode_to_vec(pk, config).unwrap();
+
+        assert_eq!(bytes, OPERATOR_KEYS[0]);
+        assert_eq!(bincode::decode_from_slice(&bytes, config).unwrap(), (pk, 48));
+    }
+
+    #[test]
+    fn pk_fmt_ignores_flags() {
+        let pk = BlsPkBytes::from(OPERATOR_KEYS[0]);
+
+        assert_eq!(pk.to_string(), PK_HEX);
+        assert_eq!(format!("{pk:#}"), PK_HEX);
+        assert_eq!(format!("{pk:>100}"), PK_HEX);
+        assert_eq!(format!("{pk:.4}"), PK_HEX);
+        assert_eq!(PK_HEX.to_uppercase().parse::<BlsPkBytes>().unwrap(), pk);
+        assert!(format!("0x{PK_HEX}").parse::<BlsPkBytes>().is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn pk_serde_layout_is_hex_string() {
+        let pk = BlsPkBytes::from(OPERATOR_KEYS[0]);
+
+        assert_eq!(serde_json::to_string(&pk).unwrap(), format!("\"{PK_HEX}\""));
+        assert_eq!(serde_json::from_str::<BlsPkBytes>(&format!("\"{PK_HEX}\"")).unwrap(), pk);
+        assert!(serde_json::from_str::<BlsPkBytes>(&format!("{:?}", OPERATOR_KEYS[0])).is_err());
+
+        #[cfg(feature = "bincode")]
+        {
+            let config = bincode::config::standard();
+            let bytes = bincode::serde::encode_to_vec(pk, config).unwrap();
+            let raw = bincode::serde::encode_to_vec(Bytes(&OPERATOR_KEYS[0]), config).unwrap();
+
+            assert_eq!(bytes, [&[96], PK_HEX.as_bytes()].concat());
+            assert_eq!(bincode::serde::decode_from_slice(&bytes, config).unwrap(), (pk, 97));
+            assert!(bincode::serde::decode_from_slice::<BlsPkBytes, _>(&raw, config).is_err());
+        }
+    }
+
+    #[cfg(all(feature = "serde", feature = "bincode"))]
+    struct Bytes<'a>(&'a [u8]);
+
+    #[cfg(all(feature = "serde", feature = "bincode"))]
+    impl serde::Serialize for Bytes<'_> {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            s.serialize_bytes(self.0)
+        }
+    }
+
+    #[cfg(feature = "bls")]
     mod compatibility_tests {
         use super::super::*;
         use super::{CHAINLOCK_BLOCK_HASH, CHAINLOCK_SIG, OPERATOR_KEYS, QUORUM_PUBKEY};
@@ -572,7 +652,7 @@ mod tests {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(feature = "bls")]
     mod benchmarks {
         use super::super::*;
         use super::{CHAINLOCK_SIG, OPERATOR_KEYS};
