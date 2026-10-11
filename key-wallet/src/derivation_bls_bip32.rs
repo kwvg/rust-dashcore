@@ -572,7 +572,7 @@ impl serde::Serialize for ExtendedBLSPrivKey {
         state.serialize_field("depth", &self.depth)?;
         state.serialize_field("parent_fingerprint", &self.parent_fingerprint)?;
         state.serialize_field("child_number", &self.child_number)?;
-        state.serialize_field("private_key", self.private_key.as_bytes().as_slice())?;
+        state.serialize_field("private_key", self.private_key.as_bytes())?;
         state.serialize_field("chain_code", &self.chain_code)?;
         state.end()
     }
@@ -780,6 +780,21 @@ impl<'de, C> bincode::BorrowDecode<'de, C> for ExtendedBLSPubKey {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(feature = "serde", feature = "bincode"))]
+    #[test]
+    fn priv_key_binary_serde_layout() {
+        use super::*;
+
+        let cfg = bincode::config::standard();
+        let sk = ExtendedBLSPrivKey::new_master(Network::Testnet, &[7u8; 32]).unwrap();
+        let bytes = bincode::serde::encode_to_vec(&sk, cfg).unwrap();
+
+        assert_eq!(bytes, hex_conservative::hex!("010008303030303030303000147c5820d8aa0324c63b708ffac9e94ba1ff1a14496643e94e7656f08fdcd8164038353131383536643732616335653663643966373862666437376432383134363233376433356365316439356637343037346363306639343234366464633736"));
+        let (back, _): (ExtendedBLSPrivKey, _) =
+            bincode::serde::decode_from_slice(&bytes, cfg).unwrap();
+        assert_eq!(bincode::serde::encode_to_vec(&back, cfg).unwrap(), bytes);
+    }
+
     #[cfg(feature = "bincode")]
     #[test]
     fn stored_pub_key_that_is_not_a_point_is_rejected() {
