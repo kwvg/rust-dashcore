@@ -6,17 +6,138 @@
 
 //! Ed25519 keys for Platform node identity.
 
+use core::fmt;
+
 #[cfg(feature = "bincode")]
 use bincode_derive::{Decode, Encode};
+use dash_pkc::eddsa::{EddsaPkBytes as PkcPkBytes, EddsaSkBytes as PkcSkBytes};
 #[cfg(feature = "eddsa")]
-pub use dash_pkc::eddsa::{EddsaError, EddsaPublicKey, EddsaSecretKey};
-pub use dash_pkc::eddsa::{EddsaPkBytes, EddsaSkBytes, EDDSA_PK_LEN, EDDSA_SK_LEN};
+use dash_pkc::eddsa::{EddsaPublicKey as PkcPublicKey, EddsaSecretKey as PkcSecretKey};
 use dash_types::type_cvrt;
 use dashcore_hashes::{sha256, Hash};
-use internals::{impl_array_newtype, impl_bytes_newtype};
+use delegate::delegate;
+use hex_conservative::DisplayHex;
+use internals::{debug_from_display, impl_array_newtype, impl_bytes_newtype};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+
+pub use dash_pkc::eddsa::EddsaError;
+
+/// Ed25519 public key length.
+pub const EDDSA_PK_LEN: usize = 32;
+
+/// Ed25519 secret key seed length.
+pub const EDDSA_SK_LEN: usize = 32;
 
 /// Ed25519 public key hash length.
 pub const EDDSA_PK_HASH_LEN: usize = 20;
+
+/// Ed25519 public key bytes (32 bytes, unvalidated).
+#[derive(Clone, Copy, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct EddsaPkBytes(PkcPkBytes);
+
+impl EddsaPkBytes {
+    delegate! {
+        to PkcPkBytes {
+            /// Wraps raw bytes without validation.
+            #[expr(Self($))]
+            pub fn from_bytes(bytes: [u8; EDDSA_PK_LEN]) -> Self;
+        }
+        to self.0 {
+            /// Borrows the inner byte array.
+            pub fn as_bytes(&self) -> &[u8; EDDSA_PK_LEN];
+
+            /// Copies out the inner byte array.
+            pub fn to_bytes(&self) -> [u8; EDDSA_PK_LEN];
+        }
+    }
+}
+
+debug_from_display!(EddsaPkBytes);
+
+/// Hex of the 32 bytes.
+impl fmt::Display for EddsaPkBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:x}", self.as_bytes().as_hex())
+    }
+}
+
+/// Ed25519 secret key seed (32 bytes).
+#[derive(Clone, Eq, PartialEq)]
+pub struct EddsaSkBytes(PkcSkBytes);
+
+impl EddsaSkBytes {
+    delegate! {
+        to PkcSkBytes {
+            /// Wraps a seed.
+            #[expr(Self($))]
+            pub fn from_bytes(bytes: [u8; EDDSA_SK_LEN]) -> Self;
+        }
+        to self.0 {
+            /// Borrows the seed.
+            pub fn as_bytes(&self) -> &[u8; EDDSA_SK_LEN];
+
+            /// Copies out the seed, wiped on drop.
+            pub fn to_bytes(&self) -> Zeroizing<[u8; EDDSA_SK_LEN]>;
+        }
+    }
+}
+
+impl fmt::Debug for EddsaSkBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("EddsaSkBytes(..)")
+    }
+}
+
+impl Zeroize for EddsaSkBytes {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for EddsaSkBytes {}
+
+/// An Ed25519 public key.
+#[cfg(feature = "eddsa")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct EddsaPublicKey(PkcPublicKey);
+
+#[cfg(feature = "eddsa")]
+impl EddsaPublicKey {
+    delegate! {
+        to self.0 {
+            /// The 32-byte encoding.
+            pub fn to_bytes(&self) -> [u8; EDDSA_PK_LEN];
+        }
+    }
+}
+
+#[cfg(feature = "eddsa")]
+type_cvrt!(From<EddsaPublicKey> for EddsaPkBytes, |pk| Self(pk.0.into()));
+#[cfg(feature = "eddsa")]
+type_cvrt!(TryFrom<EddsaPkBytes> for EddsaPublicKey, EddsaError, |pk| {
+    PkcPublicKey::try_from(&pk.0).map(Self)
+});
+
+/// An Ed25519 secret key.
+#[cfg(feature = "eddsa")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EddsaSecretKey(PkcSecretKey);
+
+#[cfg(feature = "eddsa")]
+impl EddsaSecretKey {
+    delegate! {
+        to self.0 {
+            /// Derives the corresponding public key.
+            #[expr(EddsaPublicKey($))]
+            pub fn public_key(&self) -> EddsaPublicKey;
+        }
+    }
+}
+
+#[cfg(feature = "eddsa")]
+type_cvrt!(From<EddsaSkBytes> for EddsaSecretKey, |sk| Self(PkcSecretKey::from(&sk.0)));
+#[cfg(feature = "eddsa")]
+type_cvrt!(From<EddsaSecretKey> for EddsaSkBytes, |sk| Self(PkcSkBytes::from(&sk.0)));
 
 /// Ed25519 public key hash, in canonical (i.e. Tenderdash) order.
 #[derive(Clone, Copy, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
