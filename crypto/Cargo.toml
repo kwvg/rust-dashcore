@@ -30,9 +30,11 @@ dashcore_hashes = { path = "../hashes" }
 hex-conservative = { workspace = true }
 internals = { path = "../internals", package = "dashcore-private" }
 secp256k1 = { workspace = true }
+subtle = { version = "2.6", default-features = false }
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 thiserror = "2"
 tracing = { version = "0.1", optional = true }
+zeroize = { version = "1.8", default-features = false }
 
 [lints.rust]
 unexpected_cfgs = { level = "deny", check-cfg = ['cfg(bench)', 'cfg(fuzzing)', 'cfg(kani)'] }

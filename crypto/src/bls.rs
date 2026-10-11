@@ -18,15 +18,17 @@ use dash_pkc::bls::{
     BlsPublicKey as PkcPublicKey, BlsScChia, BlsScIetf, BlsScheme as PkcScheme,
     BlsSecretKey as PkcSecretKey, BlsSignature as PkcSignature, Fr,
 };
-use dash_types::make_sbytes;
+use dash_types::type_cvrt;
 use hex_conservative::{DecodeFixedLengthBytesError, DisplayHex};
 use internals::{impl_array_newtype, impl_bytes_newtype};
 #[cfg(feature = "serde")]
 use internals::{serde_string_deserialize_impl, serde_string_serialize_impl};
+use subtle::ConstantTimeEq;
 #[cfg(feature = "bls")]
 use thiserror::Error as ThisError;
 #[cfg(feature = "bls")]
 use tracing::error;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Raw BLS public key length (G1 compressed).
 pub const BLS_PK_LEN: usize = 48;
@@ -255,10 +257,50 @@ impl BlsPublicKey {
     }
 }
 
-make_sbytes! {
-    /// BLS secret key bytes (32 big-endian bytes, unvalidated).
-    BlsSkBytes, BLS_SK_LEN
+/// BLS secret key bytes (32 big-endian bytes, unvalidated).
+#[derive(Clone)]
+pub struct BlsSkBytes(Zeroizing<[u8; BLS_SK_LEN]>);
+
+impl BlsSkBytes {
+    /// Wraps raw bytes without validation.
+    pub fn from_bytes(bytes: [u8; BLS_SK_LEN]) -> Self {
+        Self(Zeroizing::new(bytes))
+    }
+
+    /// Borrows the inner byte array.
+    pub fn as_bytes(&self) -> &[u8; BLS_SK_LEN] {
+        &self.0
+    }
+
+    /// Copies out the inner byte array, wiped on drop.
+    pub fn to_bytes(&self) -> Zeroizing<[u8; BLS_SK_LEN]> {
+        self.0.clone()
+    }
 }
+
+impl fmt::Debug for BlsSkBytes {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("BlsSkBytes(<redacted>)")
+    }
+}
+
+impl Eq for BlsSkBytes {}
+
+impl PartialEq for BlsSkBytes {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.ct_eq(&*other.0).into()
+    }
+}
+
+impl Zeroize for BlsSkBytes {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for BlsSkBytes {}
+
+type_cvrt!(From<[u8; BLS_SK_LEN]> for BlsSkBytes, |bytes| Self::from_bytes(*bytes));
 
 #[cfg(feature = "bls")]
 impl BlsSkBytes {
