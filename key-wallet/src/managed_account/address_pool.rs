@@ -550,7 +550,7 @@ impl AddressPool {
                         ))
                     })?;
                 let node_id =
-                    EddsaPkHash::from(EddsaPkBytes::from_bytes(*pubkey_arr)).to_canonical_bytes();
+                    EddsaPkHash::from(EddsaPkBytes::from_bytes(*pubkey_arr)).to_byte_array();
                 let payload = Payload::PubkeyHash(dashcore::PubkeyHash::from_byte_array(node_id));
                 let address = Address::new(self.network, payload);
 

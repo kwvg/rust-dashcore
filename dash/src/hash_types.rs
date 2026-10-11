@@ -255,7 +255,9 @@ mod newtypes {
             &self,
             w: &mut W,
         ) -> Result<usize, crate::io::Error> {
-            self.as_bytes().consensus_encode(w)
+            let mut wire = self.to_byte_array();
+            wire.reverse();
+            wire.consensus_encode(w)
         }
     }
 
@@ -263,7 +265,9 @@ mod newtypes {
         fn consensus_decode<R: crate::io::Read + ?Sized>(
             r: &mut R,
         ) -> Result<Self, crate::consensus::encode::Error> {
-            Ok(Self::from_bytes(<[u8; 20]>::consensus_decode(r)?))
+            let mut bytes = <[u8; 20]>::consensus_decode(r)?;
+            bytes.reverse();
+            Ok(Self::from_byte_array(bytes))
         }
     }
 
@@ -381,15 +385,17 @@ mod tests {
 
     #[test]
     fn consensus_round_trip() {
-        let mut wire = [0u8; 20];
-        for (i, byte) in wire.iter_mut().enumerate() {
+        let mut canonical = [0u8; 20];
+        for (i, byte) in canonical.iter_mut().enumerate() {
             *byte = i as u8;
         }
+        let mut wire = canonical;
+        wire.reverse();
 
-        let node_id = EddsaPkHash::from_bytes(wire);
+        let node_id = EddsaPkHash::from_byte_array(canonical);
         let encoded = serialize(&node_id);
         assert_eq!(encoded.len(), 20);
-        assert_eq!(encoded, wire, "the stored order is the wire order");
+        assert_eq!(encoded, wire, "wire order is the byte-reversal of canonical order");
         let decoded: EddsaPkHash = deserialize(&encoded).expect("decode node id");
         assert_eq!(decoded, node_id);
     }
@@ -412,7 +418,9 @@ mod tests {
         let public_key = [7u8; 32];
         let derived = EddsaPkHash::from(EddsaPkBytes::from_bytes(public_key));
 
-        let decoded: EddsaPkHash = deserialize(&derived.to_bytes()).expect("decode node id");
+        let mut wire_bytes = derived.to_byte_array();
+        wire_bytes.reverse();
+        let decoded: EddsaPkHash = deserialize(&wire_bytes).expect("decode node id");
         assert_eq!(decoded, derived);
     }
 

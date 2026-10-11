@@ -4,7 +4,7 @@
 /// Implements standard array methods for a given wrapper type.
 #[macro_export]
 macro_rules! impl_array_newtype {
-    ($thing:ident, $ty:ty, $len:literal) => {
+    ($thing:ident, $ty:ty, $len:expr) => {
         impl<'a> core::convert::From<[$ty; $len]> for $thing {
             fn from(data: [$ty; $len]) -> Self {
                 $thing(data)
@@ -93,7 +93,7 @@ macro_rules! fmt_hex_exact {
 /// - core::str::FromStr
 #[macro_export]
 macro_rules! impl_bytes_newtype {
-    ($t:ident, $len:literal) => {
+    ($t:ident, $len:expr) => {
         impl $t {
             /// Returns a reference the underlying bytes.
             #[inline]

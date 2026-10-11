@@ -152,7 +152,7 @@ fn ed25519_platform_node_id_matches_tenderdash_convention() {
         "3130c14339391cf26a68d86879e180ee9a16b660f5aa91f560f67c0abe8cf789"
     );
     assert_eq!(
-        EddsaPkHash::from(pubkey).to_canonical_bytes().to_lower_hex_string(),
+        EddsaPkHash::from(pubkey).to_byte_array().to_lower_hex_string(),
         "302f2615e6955cce8ed3cff81e8011bfd3a2991f"
     );
 }
