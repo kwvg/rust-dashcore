@@ -41,11 +41,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Breaking:** the taproot types come from `bitcoin-crypto`. `Signature`
   fields are renamed to `signature` and `sighash_type`, and `taproot::Error` is
   `SigFromSliceError`, without a `Secp256k1` variant
-- **Breaking:** `dashcore::eddsa` uses the `dash-pkc` types, so `EddsaPkBytes`
-  and `EddsaSkBytes` no longer implement `BaseCodec` and `EddsaError` changes
-  shape. Use `EddsaPublicKey::try_from`, `EddsaPkHash::from` and
-  `EddsaSecretKey::public_key` instead of `EddsaPkBytes::validate`,
-  `EddsaPkBytes::hash` and `EddsaSkBytes::public_key`
+- **Breaking:** `dashcore::eddsa` replaces the `dashcore::ed25519_dalek`
+  re-export with `EddsaPkBytes`, `EddsaSkBytes`, `EddsaPublicKey` and
+  `EddsaSecretKey`
+- **Breaking:** `key_wallet::derivation_slip10` no longer re-exports
+  `SigningKey`, `VerifyingKey`, `Ed25519PrivateKey` or `Ed25519PublicKey`
+- **Breaking:** `ExtendedEd25519PrivKey::private_key` is `EddsaSkBytes`
+  instead of `[u8; 32]`
+- **Breaking:** `ExtendedEd25519PubKey::public_key` is `EddsaPkBytes` instead
+  of `VerifyingKey`
+- **Breaking:** `platform_node_id` fields are `PlatformNodeId` instead of
+  `PubkeyHash`, held in canonical (i.e. Tenderdash) order. Display, serde and
+  bincode write the byte-reversal of what `PubkeyHash` wrote
+- **Breaking:** `BLSPublicKey` and `BLSSignature` are aliases of
+  `bls_sig_utils::BlsPkBytes` and `BlsSigBytes`, so `BLSPublicKey`
+  debug-prints as `BlsPkBytes`
 - **Breaking:** `QualifiedMasternodeListEntry::entry_hash` and
   `MessageVerificationError::ThresholdSignatureNotValid` hold `Sha256dHash`
 - **Breaking:** `dashcore::base58` is `base58ck` 0.5.0, so `Base58CkString`
